@@ -99,6 +99,9 @@ const vscode = {
   Range,
   Location,
   CompletionItemKind: { Function: 3, Variable: 6, Module: 9 },
+  TextEdit: {
+    replace: (range, newText) => ({ range, newText })
+  },
   CompletionItem: class {
     constructor(label, kind) {
       this.label = label;
@@ -134,7 +137,11 @@ const vscode = {
     registerCompletionItemProvider: (_selector, provider) => {
       providers.completion = provider;
       return disposable;
-    }
+    },
+    registerDocumentFormattingEditProvider: (_selector, provider) => {
+      providers.formatting = provider;
+      return disposable;
+    },
   }
 };
 
@@ -156,6 +163,14 @@ async function run() {
   const mainUri = uri('/virtual/work/pages/main.ftl');
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
+
+  const unformatted = new Document(mainUri, '<#if ready>\n<p>Ready</p>\n</#if>');
+  const formatEdits = providers.formatting.provideDocumentFormattingEdits(unformatted, {
+    insertSpaces: true,
+    tabSize: 2
+  });
+  assert.strictEqual(formatEdits.length, 1);
+  assert.strictEqual(formatEdits[0].newText, '<#if ready>\n  <p>Ready</p>\n</#if>');
 
   const memberOffset = mainText.indexOf('cards.render') + 'cards.'.length;
   const memberDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, memberOffset));

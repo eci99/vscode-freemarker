@@ -1,5 +1,6 @@
 const path = require('path');
 const vscode = require('vscode');
+const { formatTemplate } = require('./formatter');
 const { parseTemplate } = require('./template-index');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
@@ -375,6 +376,16 @@ function activate(context) {
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position) => index.completions(document, position)
     }, '.', '@'),
+    vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
+      provideDocumentFormattingEdits: (document, options) => {
+        const formatted = formatTemplate(document.getText(), options);
+        if (formatted === document.getText()) return [];
+        return [vscode.TextEdit.replace(
+          new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+          formatted
+        )];
+      }
+    }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.languageId === 'freemarker') index.currentRecord(event.document);
     }),

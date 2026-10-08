@@ -13,7 +13,7 @@
     "Snippets"
   ],
   "scripts": {
-    "test": "node ./test/template-index.test.js && node ./test/extension.test.js"
+    "test": "node ./test/template-index.test.js && node ./test/formatter.test.js && node ./test/extension.test.js"
   },
   "contributes": {
     "configuration": {
