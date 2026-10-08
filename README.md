@@ -5,15 +5,16 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 ## Template features
 
 - Syntax highlighting for directives, interpolations, comments, and expressions
-- Completion of macros, functions, and variables from templates imported with `as namespace`
+- Completion of macros, functions, variables, and nested aliases across imported and included templates
 - Go to Definition for imported namespace members, assigned variables, loop variables, and included templates
 - Find All References for variables and macros/functions across namespace imports and includes
 - Workspace indexing that updates as template files are opened, edited, created, or deleted
 - Optional `freemarker.templateRoots` workspace setting for template-loader roots
+- Private definitions and namespace aliases use the configurable `freemarker.privatePrefix` setting (default: `_`)
 
-For example, with `<#import "lib/cards.ftl" as cards>`, typing `cards.` offers the macros, functions, and variables declared in `lib/cards.ftl`. Use Go to Definition on `cards.render` or `${cards.theme}` to open the declaration. Local variables declared by `#assign`, `#local`, `#global`, and `#list ... as ...` are also navigable from their references.
+For example, with `<#import "lib/toolkit.ftl" as toolkit>`, if that template imports `nested.ftl` as `nested` and includes `shared.ftl`, then `toolkit.nested.` offers nested-template declarations and `toolkit.` offers declarations from the included template plus the `nested` alias. Go to Definition resolves paths such as `toolkit.nested.render` across these template levels. Local variables declared by `#assign`, `#local`, `#global`, and `#list ... as ...` are also navigable from their references.
 
-The index resolves statically written import/include paths. It does not infer Java methods exposed through the FreeMarker data model.
+Names beginning with the private prefix are hidden from external namespace completion and definition lookup, but remain available inside their defining template. The index resolves statically written import/include paths. It does not infer Java methods exposed through the FreeMarker data model.
 
 ## Run in VS Code
 

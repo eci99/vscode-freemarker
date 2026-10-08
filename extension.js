@@ -82,22 +82,72 @@ class TemplateWorkspaceIndex {
   }
 
   includedSymbols(record, visited = new Set()) {
+    return this.includedRecords(record, visited)
+      .flatMap((included) => included.symbols.map((symbol) => ({ symbol, record: included })));
+  }
+
+  includedRecords(record, visited = new Set()) {
     const recordKey = this.key(record.uri);
     if (visited.has(recordKey)) return [];
     visited.add(recordKey);
 
-    const symbols = record.symbols.map((symbol) => ({ symbol, record }));
+    const records = [record];
     for (const directive of record.directives) {
       if (directive.kind !== 'include') continue;
       const included = this.resolveTemplate(record, directive.path);
-      if (included) symbols.push(...this.includedSymbols(included, visited));
+      if (included) records.push(...this.includedRecords(included, visited));
     }
-    return symbols;
+    return records;
   }
 
   importedRecord(record, alias) {
-    const directive = record.directives.find((item) => item.kind === 'import' && item.alias === alias);
-    return directive ? this.resolveTemplate(record, directive.path) : undefined;
+    for (const source of this.includedRecords(record)) {
+      const directive = source.directives.find((item) => item.kind === 'import' && item.alias === alias);
+      if (directive) return this.resolveTemplate(source, directive.path);
+    }
+    return undefined;
+  }
+
+  resolveNamespaceRecord(record, aliases) {
+    let current = record;
+    for (let index = 0; index < aliases.length; index += 1) {
+      const alias = aliases[index];
+      if (index > 0 && this.isPrivateName(alias)) return undefined;
+      current = this.importedRecord(current, alias);
+      if (!current) return undefined;
+    }
+    return current;
+  }
+
+  isPrivateName(name) {
+    const prefix = vscode.workspace.getConfiguration('freemarker').get('privatePrefix', '_');
+    return typeof prefix === 'string' && prefix.length > 0 && name.startsWith(prefix);
+  }
+
+  resolveNamespaceMember(record, segments) {
+    if (segments.length < 2) return undefined;
+    const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1));
+    if (!namespace) return undefined;
+    const member = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === segments[segments.length - 1]);
+    return member && !this.isPrivateName(member.symbol.name) ? member : undefined;
+  }
+
+  namespaceDeclarations(record, includePrivate = false) {
+    const declarations = this.includedSymbols(record)
+      .filter(({ symbol }) => includePrivate || !this.isPrivateName(symbol.name));
+    for (const source of this.includedRecords(record)) {
+      for (const directive of source.directives) {
+        if (directive.kind !== 'import' || !directive.alias) continue;
+        const imported = this.resolveTemplate(source, directive.path);
+        if (imported && (includePrivate || !this.isPrivateName(directive.alias))) {
+          declarations.push({
+            symbol: { name: directive.alias, kind: 'namespace' },
+            record: imported
+          });
+        }
+      }
+    }
+    return declarations;
   }
 
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
@@ -161,14 +211,13 @@ class TemplateWorkspaceIndex {
       }
     }
 
-    const qualified = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    const qualified = /\b((?:[A-Za-z_][A-Za-z0-9_]*\.)+)([A-Za-z_][A-Za-z0-9_]*)\b/g;
     let match;
     while ((match = qualified.exec(record.source)) !== null) {
-      const memberOffset = match.index + match[0].lastIndexOf(match[2]);
+      const memberOffset = match.index + match[0].length - match[2].length;
       if (offset < memberOffset || offset > memberOffset + match[2].length) continue;
-      const imported = this.importedRecord(record, match[1]);
-      const declaration = imported && this.includedSymbols(imported)
-        .find(({ symbol }) => symbol.name === match[2]);
+      const segments = `${match[1]}${match[2]}`.split('.');
+      const declaration = this.resolveNamespaceMember(record, segments);
       if (declaration) return this.definitionLocation(declaration.record, declaration.symbol);
     }
 
@@ -245,17 +294,14 @@ class TemplateWorkspaceIndex {
     };
 
     for (const record of this.records.values()) {
-      const qualified = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+      const qualified = /\b((?:[A-Za-z_][A-Za-z0-9_]*\.)+)([A-Za-z_][A-Za-z0-9_]*)\b/g;
       let match;
       while ((match = qualified.exec(record.source)) !== null) {
         if (match[2] !== target.symbol.name) continue;
-        const imported = this.importedRecord(record, match[1]);
-        const member = imported && this.includedSymbols(imported).find(({ symbol, record: source }) =>
-          symbol.name === target.symbol.name
-          && symbol.offset === targetOffset
-          && this.key(source.uri) === targetKey
-        );
+        const segments = `${match[1]}${match[2]}`.split('.');
+        const member = this.resolveNamespaceMember(record, segments);
         if (!member) continue;
+        if (member.symbol.offset !== targetOffset || this.key(member.record.uri) !== targetKey) continue;
         const memberOffset = match.index + match[0].lastIndexOf(match[2]);
         await addLocation(record, memberOffset, match[2].length);
       }
@@ -290,19 +336,24 @@ class TemplateWorkspaceIndex {
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
-    const namespaceMatch = /([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
+    const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 
     if (namespaceMatch) {
-      const imported = this.importedRecord(record, namespaceMatch[1]);
+      const imported = this.resolveNamespaceRecord(record, namespaceMatch[1].split('.'));
       if (!imported) return [];
-      declarations = this.includedSymbols(imported);
+      declarations = this.namespaceDeclarations(imported);
     } else if (/<@([A-Za-z_][A-Za-z0-9_]*)?$/.test(beforeCursor)) {
-      declarations = this.includedSymbols(record);
+      declarations = this.namespaceDeclarations(record, true);
     }
 
     return declarations.map(({ symbol, record: sourceRecord }) => {
-      const item = new vscode.CompletionItem(symbol.name, vscode.CompletionItemKind.Function);
+      const kind = symbol.kind === 'namespace'
+        ? vscode.CompletionItemKind.Module
+        : symbol.kind === 'variable'
+          ? vscode.CompletionItemKind.Variable
+          : vscode.CompletionItemKind.Function;
+      const item = new vscode.CompletionItem(symbol.name, kind);
       item.detail = `${symbol.kind} from ${path.basename(sourceRecord.uri.fsPath)}`;
       item.insertText = symbol.name;
       return item;

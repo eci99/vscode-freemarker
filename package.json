@@ -24,6 +24,11 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Additional workspace-relative directories searched when resolving template paths."
+        },
+        "freemarker.privatePrefix": {
+          "type": "string",
+          "default": "_",
+          "description": "Prefix used for private template definitions and namespace aliases. Private names are not exposed through imported namespaces."
         }
       }
     },

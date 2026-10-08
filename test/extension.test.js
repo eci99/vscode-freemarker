@@ -4,11 +4,17 @@ const Module = require('module');
 const files = new Map([
   ['/virtual/work/pages/main.ftl', [
     '<#import "../lib/cards.ftl" as cards>',
+    '<#import "../lib/toolkit.ftl" as toolkit>',
+    '<#import "../lib/cards.ftl" as _privateCards>',
     '<#include "shared.ftl">',
     '<#assign pageTitle = "Home">',
     '${pageTitle}',
     '<#list products as product>${product}</#list>',
     '<@cards.render>card</@cards.render>',
+    '<@toolkit.nested.render />',
+    '<@toolkit.included />',
+    '<@toolkit._privateNested.render />',
+    '${toolkit.nested.label}',
     '${cards.theme}',
     '${cards.theme}',
     '<@layout />',
@@ -16,9 +22,23 @@ const files = new Map([
   ].join('\n')],
   ['/virtual/work/lib/cards.ftl', [
     '<#macro render>card</#macro>',
+    '<#macro _hidden>secret</#macro>',
+    '<#macro _helper><#return></#macro>',
+    '<#macro publicHelper><@_helper /></#macro>',
     '<#function total>1</#function>',
-    '<#assign theme = "blue">'
+    '<#assign theme = "blue">',
+    '<#assign _internal = "secret">'
   ].join('\n')],
+  ['/virtual/work/lib/toolkit.ftl', [
+    '<#import "nested.ftl" as nested>',
+    '<#import "nested.ftl" as _privateNested>',
+    '<#include "toolkit-shared.ftl">'
+  ].join('\n')],
+  ['/virtual/work/lib/nested.ftl', [
+    '<#macro render>nested</#macro>',
+    '<#assign label = "Nested">'
+  ].join('\n')],
+  ['/virtual/work/lib/toolkit-shared.ftl', '<#macro included>included</#macro>'],
   ['/virtual/work/pages/shared.ftl', '<#macro layout>layout</#macro>']
 ]);
 
@@ -78,7 +98,7 @@ const vscode = {
   Position,
   Range,
   Location,
-  CompletionItemKind: { Function: 3 },
+  CompletionItemKind: { Function: 3, Variable: 6, Module: 9 },
   CompletionItem: class {
     constructor(label, kind) {
       this.label = label;
@@ -169,16 +189,80 @@ async function run() {
   const loopVariableOffset = mainText.indexOf('product}</') + 1;
   const loopVariableDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, loopVariableOffset));
   assert.strictEqual(loopVariableDefinition.uri.fsPath, mainUri.fsPath);
-  assert.strictEqual(loopVariableDefinition.range.start.line, 4);
+  assert.strictEqual(
+    loopVariableDefinition.range.start.line,
+    positionAt(mainText, mainText.indexOf('<#list products')).line
+  );
 
   const namespaceVariableOffset = mainText.indexOf('cards.theme') + 'cards.'.length;
   const namespaceVariableDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, namespaceVariableOffset));
   assert.strictEqual(namespaceVariableDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
-  assert.strictEqual(namespaceVariableDefinition.range.start.line, 2);
+  assert.strictEqual(
+    namespaceVariableDefinition.range.start.line,
+    positionAt(files.get('/virtual/work/lib/cards.ftl'), files.get('/virtual/work/lib/cards.ftl').indexOf('theme =')).line
+  );
 
   const completionOffset = mainText.indexOf('<@cards.render') + '<@cards.'.length;
   const completions = await providers.completion.provideCompletionItems(document, positionAt(mainText, completionOffset));
-  assert.deepStrictEqual(completions.map((item) => item.label), ['render', 'total', 'theme']);
+  assert.deepStrictEqual(completions.map((item) => item.label), ['render', 'publicHelper', 'total', 'theme']);
+  assert(!completions.some((item) => item.label.startsWith('_')));
+  assert.strictEqual(completions.find((item) => item.label === 'render').kind, vscode.CompletionItemKind.Function);
+  assert.strictEqual(completions.find((item) => item.label === 'theme').kind, vscode.CompletionItemKind.Variable);
+
+  const nestedDefinitionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.nested.'.length;
+  const nestedDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, nestedDefinitionOffset)
+  );
+  assert.strictEqual(nestedDefinition.uri.fsPath, '/virtual/work/lib/nested.ftl');
+
+  const includedDefinitionOffset = mainText.indexOf('toolkit.included') + 'toolkit.'.length;
+  const includedDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, includedDefinitionOffset)
+  );
+  assert.strictEqual(includedDefinition.uri.fsPath, '/virtual/work/lib/toolkit-shared.ftl');
+
+  const nestedCompletionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.nested.'.length;
+  const nestedCompletions = await providers.completion.provideCompletionItems(
+    document,
+    positionAt(mainText, nestedCompletionOffset)
+  );
+  assert(nestedCompletions.some((item) => item.label === 'render'));
+  assert(nestedCompletions.some((item) => item.label === 'label'));
+
+  const toolkitCompletionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.'.length;
+  const toolkitCompletions = await providers.completion.provideCompletionItems(
+    document,
+    positionAt(mainText, toolkitCompletionOffset)
+  );
+  assert(toolkitCompletions.some((item) => item.label === 'included'));
+  assert(toolkitCompletions.some((item) => item.label === 'nested'));
+  assert(!toolkitCompletions.some((item) => item.label === '_privateNested'));
+
+  const privateDefinitionOffset = mainText.indexOf('cards._hidden') + 'cards.'.length + 1;
+  const privateDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, privateDefinitionOffset)
+  );
+  assert.strictEqual(privateDefinition, undefined);
+
+  const privateNestedOffset = mainText.indexOf('toolkit._privateNested.render') + 'toolkit.'.length + 2;
+  const privateNestedDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, privateNestedOffset)
+  );
+  assert.strictEqual(privateNestedDefinition, undefined);
+
+  const cardsUri = uri('/virtual/work/lib/cards.ftl');
+  const cardsText = files.get(cardsUri.fsPath);
+  const cardsDocument = new Document(cardsUri, cardsText);
+  const internalMacroOffset = cardsText.indexOf('_helper />') + 2;
+  const internalMacroDefinition = await providers.definition.provideDefinition(
+    cardsDocument,
+    cardsDocument.positionAt(internalMacroOffset)
+  );
+  assert.strictEqual(internalMacroDefinition.uri.fsPath, cardsUri.fsPath);
 
   const pageTitleReferences = await providers.references.provideReferences(
     document,
@@ -208,7 +292,10 @@ async function run() {
   assert.strictEqual(layoutReferences.length, 3);
   assert(layoutReferences.some((location) =>
     location.uri.fsPath === mainUri.fsPath
-    && location.range.start.line === 9
+    && location.range.start.line === positionAt(
+      mainText,
+      mainText.indexOf('<@layout>content</@') + '<@layout>content</@'.length
+    ).line
     && location.range.start.character === '<@layout>content</@'.length
   ));
 
