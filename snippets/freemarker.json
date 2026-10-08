@@ -1,0 +1,84 @@
+{
+  "If block": {
+    "prefix": "if",
+    "body": [
+      "<#if ${1:condition}>",
+      "\t$0",
+      "</#if>"
+    ],
+    "description": "Conditional block"
+  },
+  "Else if statement": {
+    "prefix": "elif",
+    "body": "<#elseif ${1:condition}>",
+    "description": "'else if' statement"
+  },
+  "Else statement": {
+    "prefix": "else",
+    "body": "<#else>",
+    "description": "'else' statement"
+  },
+  "If / else block": {
+    "prefix": "ife",
+    "body": [
+      "<#if ${1:condition}>",
+      "\t$2",
+      "<#else>",
+      "\t$0",
+      "</#if>"
+    ],
+    "description": "Conditional block with an alternative"
+  },
+  "List block": {
+    "prefix": "list",
+    "body": [
+      "<#list ${1:items} as ${2:item}>",
+      "\t$0",
+      "</#list>"
+    ],
+    "description": "Iterate over a sequence"
+  },
+  "Assign variable": {
+    "prefix": "assign",
+    "body": "<#assign ${1:name} = ${2:value}/>",
+    "description": "Assign a variable"
+  },
+  "Local variable": {
+    "prefix": "local",
+    "body": "<#local ${1:name} = ${2:value}/>",
+    "description": "Assign a local variable"
+  },
+  "Macro definition": {
+    "prefix": "macro",
+    "body": [
+      "<#macro ${1:name} ${2:args}>",
+      "\t$0",
+      "</#macro>"
+    ],
+    "description": "Define a reusable macro"
+  },
+  "Interpolation": {
+    "prefix": "interp",
+    "body": "${${1:expression}}$0",
+    "description": "Output an expression"
+  },
+  "FreeMarker comment": {
+    "prefix": "ftlcomment",
+    "body": [
+      "<#--",
+      "\t$0",
+      "-->"
+    ],
+    "description": "FreeMarker comment"
+  },
+  "Include template": {
+    "prefix": "include",
+    "body": "<#include \"${1:template.ftl}\">$0",
+    "description": "Include another template"
+  },
+  "Import template": {
+    "prefix": "import",
+    "body": "<#import \"${1:template.ftl}\" as ${2:namespace}>$0",
+    "description": "Import another template with namespace" 
+  }
+}

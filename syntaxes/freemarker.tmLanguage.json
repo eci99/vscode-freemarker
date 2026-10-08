@@ -1,0 +1,121 @@
+{
+  "name": "FreeMarker",
+  "scopeName": "text.html.ftl",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#interpolation" },
+    { "include": "#directive" },
+    { "include": "#userDirective" },
+    { "include": "text.html.basic" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.block.freemarker",
+      "begin": "<#--",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.freemarker" }
+      },
+      "end": "-->",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.freemarker" }
+      }
+    },
+    "interpolation": {
+      "name": "meta.interpolation.freemarker",
+      "begin": "(\\$|#)\\{",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.embedded.begin.freemarker" },
+        "0": { "name": "punctuation.section.interpolation.begin.freemarker" }
+      },
+      "end": "}",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.freemarker" }
+      },
+      "patterns": [
+        { "include": "#expression" }
+      ]
+    },
+    "directive": {
+      "name": "meta.directive.freemarker",
+      "begin": "</?(#)([A-Za-z_][A-Za-z0-9_-]*)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" },
+        "1": { "name": "punctuation.definition.tag.freemarker" },
+        "2": { "name": "keyword.control.directive.freemarker" }
+      },
+      "end": ">",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" }
+      },
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#expression" }
+      ]
+    },
+    "userDirective": {
+      "name": "meta.directive.user.freemarker",
+      "begin": "</?(@)([A-Za-z_][A-Za-z0-9_.-]*)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" },
+        "1": { "name": "punctuation.definition.tag.freemarker" },
+        "2": { "name": "entity.name.function.freemarker" }
+      },
+      "end": ">",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" }
+      },
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#expression" }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.freemarker",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#stringEscape" }]
+        },
+        {
+          "name": "string.quoted.single.freemarker",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "include": "#stringEscape" }]
+        },
+        {
+          "match": "\\?(html|xml|xhtml|json|js_string|url|url_path|cap_first|uncap_first|capitalize|lower_case|upper_case|trim|size|length|has_content|default|if_exists|is_defined|is_empty|keys|values|first|last|join|sort|reverse|replace|matches|contains|starts_with|ends_with|split|substring|number|date|time|datetime|string|c|cn|then|abs|round|floor|ceiling|boolean|sequence|hash|node|method|loop|index|counter|item_cycle|current_template_name|namespace|template_name)\\b",
+          "name": "support.function.builtin.freemarker"
+        },
+        {
+          "match": "\\b(true|false|yes|no|null)\\b",
+          "name": "constant.language.freemarker"
+        },
+        {
+          "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+          "name": "constant.numeric.freemarker"
+        },
+        {
+          "match": "\\b(and|or|not|gt|gte|lt|lte|as|in|is|exists)\\b|&&|\\|\\||==|!=|<=|>=|[+*/%-]",
+          "name": "keyword.operator.freemarker"
+        },
+        {
+          "match": "[A-Za-z_][A-Za-z0-9_]*",
+          "name": "variable.other.freemarker"
+        },
+        {
+          "match": "[(){}\\[\\].,?:!<>=]",
+          "name": "punctuation.freemarker"
+        }
+      ]
+    },
+    "stringEscape": {
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.freemarker"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "comments": {
+    "blockComment": ["<#--", "-->"]
+  },
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] },
+    { "open": "<#--", "close": "-->", "notIn": ["comment"] },
+    { "open": "${", "close": "}" },
+    { "open": "#{", "close": "}" }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^(?!.*</#(if|list|foreach|switch|macro|function|attempt|compress|noparse|outputformat|autoesc|noautoesc|escape|transform|items|sep)\\s*>).*<#(if|list|foreach|switch|macro|function|attempt|compress|noparse|outputformat|autoesc|noautoesc|escape|transform|items|sep)\\b.*>\\s*$",
+    "decreaseIndentPattern": "^\\s*</#(if|list|foreach|switch|macro|function|attempt|compress|noparse|outputformat|autoesc|noautoesc|escape|transform|items|sep|recover)\\s*>"
+  }
+}

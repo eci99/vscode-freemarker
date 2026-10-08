@@ -1,0 +1,60 @@
+{
+  "name": "freemarker-language-support",
+  "displayName": "FreeMarker Language Support",
+  "description": "FreeMarker template support with namespace completion and navigation across files.",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "main": "./extension.js",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "scripts": {
+    "test": "node ./test/template-index.test.js && node ./test/extension.test.js"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "FreeMarker",
+      "properties": {
+        "freemarker.templateRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional workspace-relative directories searched when resolving template paths."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "freemarker",
+        "aliases": [
+          "FreeMarker",
+          "freemarker",
+          "FTL"
+        ],
+        "extensions": [
+          ".ftl",
+          ".ftlh",
+          ".ftlx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "freemarker",
+        "scopeName": "text.html.ftl",
+        "path": "./syntaxes/freemarker.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "freemarker",
+        "path": "./snippets/freemarker.json"
+      }
+    ]
+  }
+}
