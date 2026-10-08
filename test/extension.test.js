@@ -21,11 +21,12 @@ const files = new Map([
     '<@layout>content</@layout>'
   ].join('\n')],
   ['/virtual/work/lib/cards.ftl', [
+    '<#import "nested.ftl" as nested>',
     '<#macro render>card</#macro>',
     '<#macro _hidden>secret</#macro>',
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
-    '<#function total>1</#function>',
+    '<#function total items precision=2 label="compact">1</#function>',
     '<#assign theme = "blue">',
     '<#assign _internal = "secret">'
   ].join('\n')],
@@ -98,7 +99,7 @@ const vscode = {
   Position,
   Range,
   Location,
-  CompletionItemKind: { Function: 3, Variable: 6, Module: 9 },
+  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
   },
@@ -106,6 +107,11 @@ const vscode = {
     constructor(label, kind) {
       this.label = label;
       this.kind = kind;
+    }
+  },
+  MarkdownString: class {
+    constructor(value) {
+      this.value = value;
     }
   },
   workspace: {
@@ -219,10 +225,32 @@ async function run() {
 
   const completionOffset = mainText.indexOf('<@cards.render') + '<@cards.'.length;
   const completions = await providers.completion.provideCompletionItems(document, positionAt(mainText, completionOffset));
-  assert.deepStrictEqual(completions.map((item) => item.label), ['render', 'publicHelper', 'total', 'theme']);
+  assert.deepStrictEqual(completions.map((item) => item.label), ['nested', 'theme', 'total', 'publicHelper', 'render']);
+  assert.deepStrictEqual(
+    [...completions].sort((left, right) => left.sortText.localeCompare(right.sortText)).map((item) => item.label),
+    ['nested', 'theme', 'total', 'publicHelper', 'render']
+  );
   assert(!completions.some((item) => item.label.startsWith('_')));
-  assert.strictEqual(completions.find((item) => item.label === 'render').kind, vscode.CompletionItemKind.Function);
+  assert.strictEqual(completions.find((item) => item.label === 'nested').kind, vscode.CompletionItemKind.Module);
   assert.strictEqual(completions.find((item) => item.label === 'theme').kind, vscode.CompletionItemKind.Variable);
+  assert.strictEqual(completions.find((item) => item.label === 'total').kind, vscode.CompletionItemKind.Function);
+  assert.strictEqual(
+    completions.find((item) => item.label === 'total').detail,
+    'function from cards.ftl'
+  );
+  assert.strictEqual(
+    completions.find((item) => item.label === 'total').documentation.value,
+    'function total\n\nParameter:\n\n- `items`\n- `precision` = `2`\n- `label` = `"compact"`'
+  );
+  assert.strictEqual(
+    completions.find((item) => item.label === 'render').documentation.value,
+    'macro render\n\nParameter: none'
+  );
+  assert.strictEqual(
+    completions.find((item) => item.label === 'theme').documentation.value,
+    'Definition\n\n```ftl\n<#assign theme = "blue">\n```'
+  );
+  assert.strictEqual(completions.find((item) => item.label === 'render').kind, vscode.CompletionItemKind.Method);
 
   const nestedDefinitionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.nested.'.length;
   const nestedDefinition = await providers.definition.provideDefinition(

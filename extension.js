@@ -348,14 +348,37 @@ class TemplateWorkspaceIndex {
       declarations = this.namespaceDeclarations(record, true);
     }
 
+    const groupOrder = { namespace: 0, variable: 1, function: 2, macro: 3 };
+    declarations.sort((left, right) => {
+      const groupDifference = (groupOrder[left.symbol.kind] ?? 4) - (groupOrder[right.symbol.kind] ?? 4);
+      return groupDifference || left.symbol.name.localeCompare(right.symbol.name);
+    });
+
     return declarations.map(({ symbol, record: sourceRecord }) => {
       const kind = symbol.kind === 'namespace'
         ? vscode.CompletionItemKind.Module
         : symbol.kind === 'variable'
           ? vscode.CompletionItemKind.Variable
-          : vscode.CompletionItemKind.Function;
+          : symbol.kind === 'function'
+            ? vscode.CompletionItemKind.Function
+            : vscode.CompletionItemKind.Method;
       const item = new vscode.CompletionItem(symbol.name, kind);
+      item.sortText = `${String(groupOrder[symbol.kind] ?? 4).padStart(2, '0')}_${symbol.name.toLowerCase()}`;
       item.detail = `${symbol.kind} from ${path.basename(sourceRecord.uri.fsPath)}`;
+      if ((symbol.kind === 'function' || symbol.kind === 'macro') && symbol.parameters) {
+        const parameterLines = symbol.parameters.map(({ name, defaultValue }) => {
+          const parameter = `\`${name}\``;
+          return defaultValue === undefined
+            ? `- ${parameter}`
+            : `- ${parameter} = \`${defaultValue.replace(/`/g, '\\`')}\``;
+        });
+        const parameters = parameterLines.length > 0
+          ? `Parameter:\n\n${parameterLines.join('\n')}`
+          : 'Parameter: none';
+        item.documentation = new vscode.MarkdownString(`${symbol.kind} ${symbol.name}\n\n${parameters}`);
+      } else if (symbol.kind === 'variable' && symbol.declaration) {
+        item.documentation = new vscode.MarkdownString(`Definition\n\n\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
+      }
       item.insertText = symbol.name;
       return item;
     });
