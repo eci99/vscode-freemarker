@@ -3,6 +3,7 @@ const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
 const { formatTemplate } = require('./formatter');
 const { parseTemplate } = require('./template-index');
+const { validateTemplate } = require('./validator');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 
@@ -781,6 +782,19 @@ class TemplateWorkspaceIndex {
 function activate(context) {
   const index = new TemplateWorkspaceIndex();
   index.initialize();
+  const diagnostics = vscode.languages.createDiagnosticCollection('freemarker');
+  context.subscriptions.push(diagnostics);
+  const validateDocument = (document) => {
+    if (document.languageId !== 'freemarker') return;
+    const issues = validateTemplate(document.getText());
+    const entries = issues.map((issue) => new vscode.Diagnostic(
+      new vscode.Range(document.positionAt(issue.offset), document.positionAt(issue.offset + issue.length)),
+      issue.message,
+      vscode.DiagnosticSeverity.Error
+    ));
+    if (entries.length) diagnostics.set(document.uri, entries);
+    else diagnostics.delete(document.uri);
+  };
 
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider({ language: 'freemarker' }, {
@@ -806,12 +820,21 @@ function activate(context) {
       }
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.languageId === 'freemarker') index.currentRecord(event.document);
+      if (event.document.languageId === 'freemarker') {
+        index.currentRecord(event.document);
+        validateDocument(event.document);
+      }
     }),
     vscode.workspace.onDidOpenTextDocument((document) => {
-      if (document.languageId === 'freemarker') index.currentRecord(document);
-    })
+      if (document.languageId === 'freemarker') {
+        index.currentRecord(document);
+        validateDocument(document);
+      }
+    }),
+    vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri))
   );
+
+  for (const document of vscode.workspace.textDocuments) validateDocument(document);
 
   const watcher = vscode.workspace.createFileSystemWatcher(templatePattern);
   watcher.onDidCreate((uri) => {

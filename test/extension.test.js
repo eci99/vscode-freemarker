@@ -87,6 +87,14 @@ class Hover {
   }
 }
 
+class Diagnostic {
+  constructor(range, message, severity) {
+    this.range = range;
+    this.message = message;
+    this.severity = severity;
+  }
+}
+
 class Document {
   constructor(targetUri, text) {
     this.uri = targetUri;
@@ -113,12 +121,17 @@ class Document {
 }
 
 const providers = {};
+const diagnosticEntries = new Map();
+let onDidOpenDocument;
+let onDidChangeDocument;
 const disposable = { dispose() {} };
 const vscode = {
   Position,
   Range,
   Location,
   Hover,
+  Diagnostic,
+  DiagnosticSeverity: { Error: 0 },
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
@@ -141,14 +154,22 @@ const vscode = {
   },
   workspace: {
     workspaceFolders: [{ uri: uri('/virtual/work') }],
+    textDocuments: [],
     findFiles: async () => [...files.keys()].map(uri),
     fs: {
       readFile: async (targetUri) => Buffer.from(files.get(targetUri.fsPath))
     },
     getConfiguration: () => ({ get: (_key, fallback) => fallback }),
     openTextDocument: async (targetUri) => new Document(targetUri, files.get(targetUri.fsPath)),
-    onDidChangeTextDocument: () => disposable,
-    onDidOpenTextDocument: () => disposable,
+    onDidChangeTextDocument: (listener) => {
+      onDidChangeDocument = listener;
+      return disposable;
+    },
+    onDidOpenTextDocument: (listener) => {
+      onDidOpenDocument = listener;
+      return disposable;
+    },
+    onDidCloseTextDocument: () => disposable,
     createFileSystemWatcher: () => ({
       onDidCreate() {},
       onDidChange() {},
@@ -157,6 +178,11 @@ const vscode = {
     })
   },
   languages: {
+    createDiagnosticCollection: () => ({
+      set: (targetUri, entries) => diagnosticEntries.set(targetUri.fsPath, entries),
+      delete: (targetUri) => diagnosticEntries.delete(targetUri.fsPath),
+      dispose() {}
+    }),
     registerDefinitionProvider: (_selector, provider) => {
       providers.definition = provider;
       return disposable;
@@ -199,6 +225,14 @@ async function run() {
   const mainUri = uri('/virtual/work/pages/main.ftl');
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
+
+  const invalidDocument = new Document(mainUri, '<#if ready>\n</#list>');
+  onDidOpenDocument(invalidDocument);
+  assert.strictEqual(diagnosticEntries.get(mainUri.fsPath).length, 2);
+  assert(diagnosticEntries.get(mainUri.fsPath)[0].message.includes('does not match the open'));
+  invalidDocument.text = '<#if ready>\n</#if>';
+  onDidChangeDocument({ document: invalidDocument });
+  assert.strictEqual(diagnosticEntries.has(mainUri.fsPath), false);
 
   const unformatted = new Document(mainUri, '<#if ready>\n<p>Ready</p>\n</#if>');
   const formatEdits = providers.formatting.provideDocumentFormattingEdits(unformatted, {
