@@ -1,6 +1,6 @@
 {
-  "name": "freemarker-language-support",
-  "displayName": "FreeMarker Language Support",
+  "name": "freemarker-intellisense",
+  "displayName": "FreeMarker IntelliSense",
   "description": "FreeMarker template support with namespace completion and navigation across files.",
   "version": "0.1.0",
   "publisher": "local-dev",

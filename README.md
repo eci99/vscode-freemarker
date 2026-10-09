@@ -1,4 +1,4 @@
-# FreeMarker Language Support
+# FreeMarker IntelliSense
 
 VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`). The built-ins, directives, special variables, and literals follow FreeMarker 2.3.35.
 
