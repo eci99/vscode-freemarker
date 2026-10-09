@@ -1,7 +1,7 @@
 const path = require('path');
 const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
-const { BUILTINS, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
+const { BUILTINS, builtinBefore, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
 const { formatTemplate } = require('./formatter');
 const { parseTemplate } = require('./template-index');
 const { validateTemplate } = require('./validator');
@@ -265,7 +265,7 @@ class TemplateWorkspaceIndex {
       });
   }
 
-  functionCallContext(record, source, includePrivate = false) {
+  openCall(source) {
     const parentheses = [];
     let quote = null;
     for (let index = 0; index < source.length; index += 1) {
@@ -285,6 +285,12 @@ class TemplateWorkspaceIndex {
 
     const opening = parentheses[parentheses.length - 1];
     if (opening === undefined || !this.isFreeMarkerExpression(source, opening, source.length)) return undefined;
+    return opening;
+  }
+
+  functionCallContext(record, source, includePrivate = false) {
+    const opening = this.openCall(source);
+    if (opening === undefined) return undefined;
     const functionMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(source.slice(0, opening));
     if (!functionMatch) return undefined;
 
@@ -296,9 +302,13 @@ class TemplateWorkspaceIndex {
       );
     if (!declaration || declaration.symbol.kind !== 'function') return undefined;
 
+    return { declaration, ...this.callArguments(source, opening) };
+  }
+
+  callArguments(source, opening) {
     let argumentIndex = 0;
     let nesting = 0;
-    quote = null;
+    let quote = null;
     const suppliedArguments = [];
     let argumentStart = opening + 1;
     for (let index = opening + 1; index < source.length; index += 1) {
@@ -327,7 +337,33 @@ class TemplateWorkspaceIndex {
       suppliedArguments.push(source.slice(argumentStart).trim());
     }
 
-    return { declaration, argumentIndex, suppliedArguments };
+    return { argumentIndex, suppliedArguments };
+  }
+
+  builtinSignatureHelp(source) {
+    const opening = this.openCall(source);
+    const builtin = opening === undefined ? undefined : builtinBefore(source.slice(0, opening));
+    if (!builtin || builtin.parameters === undefined) return undefined;
+
+    const signature = new vscode.SignatureInformation(
+      `?${builtinSignature(builtin)}`,
+      new vscode.MarkdownString(builtin.description)
+    );
+    let parameterStart = builtin.name.length + 2;
+    signature.parameters = builtin.parameters.split(', ').map((parameter) => {
+      const range = [parameterStart, parameterStart + parameter.length];
+      parameterStart += parameter.length + 2;
+      return new vscode.ParameterInformation(
+        range,
+        new vscode.MarkdownString(parameter.endsWith('?') ? 'Optional' : parameter.endsWith('...') ? 'Repeatable' : '*(Required)*')
+      );
+    });
+
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    help.activeParameter = Math.min(this.callArguments(source, opening).argumentIndex, signature.parameters.length - 1);
+    return help;
   }
 
   functionArgumentCompletions(record, source) {
@@ -380,6 +416,8 @@ class TemplateWorkspaceIndex {
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
+    const builtinHelp = this.builtinSignatureHelp(beforeCursor);
+    if (builtinHelp) return builtinHelp;
     const context = this.functionCallContext(record, beforeCursor, true);
     if (!context) return undefined;
 

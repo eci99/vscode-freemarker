@@ -1040,6 +1040,32 @@ async function run() {
   assert.strictEqual(await builtinHoverAt('${title?unknown_name}', 'unknown_name'), undefined);
   assert.strictEqual(await builtinHoverAt('<a href="page?trim">', 'trim'), undefined);
 
+  const builtinHelpAt = (text) => {
+    const builtinDocument = new Document(builtinUri, text);
+    return providers.signatureHelp.provideSignatureHelp(builtinDocument, builtinDocument.positionAt(text.length));
+  };
+  const replaceHelp = await builtinHelpAt('${title?replace(');
+  assert.strictEqual(replaceHelp.signatures[0].label, '?replace(from, to, flags?)');
+  assert.deepStrictEqual(
+    replaceHelp.signatures[0].parameters.map(({ label }) => replaceHelp.signatures[0].label.slice(...label)),
+    ['from', 'to', 'flags?']
+  );
+  assert.strictEqual(replaceHelp.signatures[0].parameters[0].documentation.value, '*(Required)*');
+  assert.strictEqual(replaceHelp.signatures[0].parameters[2].documentation.value, 'Optional');
+  assert.strictEqual(replaceHelp.activeParameter, 0);
+  assert.strictEqual((await builtinHelpAt('${title?replace("a, b", ')).activeParameter, 1);
+  assert.strictEqual((await builtinHelpAt('<#if title?replace("a", "b", "r", ')).activeParameter, 2);
+  assert.strictEqual((await builtinHelpAt('${item?item_cycle("a", "b", "c", "d", ')).activeParameter, 2);
+  assert.strictEqual((await builtinHelpAt('${title?left_pad(title?index_of(')).signatures[0].label, '?index_of(substring, fromIndex?)');
+  assert.strictEqual(await builtinHelpAt('${title?trim('), undefined);
+  assert.strictEqual(await builtinHelpAt('${title?replace("a", "b")'), undefined);
+  assert.strictEqual(await builtinHelpAt('${replace('), undefined);
+
+  onDidOpenDocument(new Document(builtinUri, '${title?uper_case}'));
+  assert.strictEqual(diagnosticEntries.get(builtinUri.fsPath).length, 1);
+  assert(diagnosticEntries.get(builtinUri.fsPath)[0].message.includes('Did you mean ?upper_case?'));
+  assert.deepStrictEqual(diagnosticEntries.get(builtinUri.fsPath)[0].range.start, new Position(0, 8));
+
   console.log('Extension integration tests passed.');
 }
 

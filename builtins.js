@@ -242,6 +242,43 @@ function builtinNameStart(beforeCursor) {
   return match ? beforeCursor.length - (match[2] || '').length : -1;
 }
 
+// The built-in named directly before the position, such as `replace` before the `(` of a call.
+function builtinBefore(text) {
+  const head = text.replace(/\s+$/, '');
+  const start = builtinNameStart(head);
+  return start >= 0 && start < head.length ? findBuiltin(head.slice(start)) : undefined;
+}
+
+function editDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        previous[column] + 1,
+        current[column - 1] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+// The known built-in name closest to a misspelled one, if any is close enough.
+function suggestBuiltin(name) {
+  let best;
+  let bestDistance = Math.min(3, name.length / 2);
+  for (const candidate of builtinsByName.keys()) {
+    const distance = editDistance(name, candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 // The match pattern used by syntaxes/freemarker.tmLanguage.json.
 function builtinGrammarPattern() {
   return `\\?(${[...builtinsByName.keys()].sort().join('|')})\\b`;
@@ -249,9 +286,11 @@ function builtinGrammarPattern() {
 
 module.exports = {
   BUILTINS,
+  builtinBefore,
   builtinGrammarPattern,
   builtinNameStart,
   builtinSignature,
   camelCaseName,
-  findBuiltin
+  findBuiltin,
+  suggestBuiltin
 };

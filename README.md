@@ -5,7 +5,7 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 ## Template features
 
 - Syntax highlighting for directives, interpolations, comments, and expressions
-- Template validation for unclosed, unexpected, and mismatched FreeMarker block tags
+- Template validation for unclosed, unexpected, and mismatched FreeMarker block tags, and for unknown built-ins with a suggestion for likely typos
 - Document formatting for nested FreeMarker blocks and paired user directives, with `@formatter:off` / `@formatter:on` comment markers to preserve selected regions
 - Completion of macros, functions, variables, and nested aliases across imported and included templates
 - Variable completion labels include known assigned values
@@ -19,6 +19,7 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 - Built-in completion after `?` in FreeMarker expressions, with hover documentation and highlighting for snake case and camel case names; deprecated built-ins are marked
 - The first paragraph of a comment immediately before or inline after a variable declaration is included in its hover
 - Signature Help for function calls with parameter details, default values, documentation, and active parameter highlighting
+- Signature Help for built-ins that take arguments, such as `?replace(from, to, flags?)`
 - Find All References for variables and macros/functions across namespace imports and includes
 - Rename Symbol for variables, macros, and functions across templates, updating declarations and all references
 - Workspace indexing that updates as template files are opened, edited, created, or deleted

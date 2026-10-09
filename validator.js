@@ -1,3 +1,5 @@
+const { findBuiltin, suggestBuiltin } = require('./builtins');
+
 const BLOCK_DIRECTIVES = new Set([
   'if', 'list', 'foreach', 'switch', 'macro', 'function', 'attempt', 'compress',
   'noparse', 'outputformat', 'autoesc', 'noautoesc', 'escape', 'transform',
@@ -21,6 +23,58 @@ function findTagEnd(text, start) {
     }
   }
   return -1;
+}
+
+function findInterpolationEnd(text, start) {
+  let quote = null;
+  let nesting = 0;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== '\\') quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '{') {
+      nesting += 1;
+    } else if (character === '}') {
+      if (nesting === 0) return index;
+      nesting -= 1;
+    }
+  }
+  return -1;
+}
+
+function validateBuiltins(source) {
+  const diagnostics = [];
+  const expressionPattern = /[$#]\{|<[#@][A-Za-z_]/g;
+  let match;
+
+  while ((match = expressionPattern.exec(source)) !== null) {
+    const start = match.index + 2;
+    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
+    if (end < 0) continue;
+
+    let quote = null;
+    for (let index = start; index < end; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '?' && source[index - 1] !== '?') {
+        const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(index + 1, end));
+        if (!name || findBuiltin(name[0])) continue;
+        const suggestion = suggestBuiltin(name[0]);
+        diagnostics.push({
+          message: `Unknown built-in ?${name[0]}.${suggestion ? ` Did you mean ?${suggestion}?` : ''}`,
+          offset: index + 1,
+          length: name[0].length
+        });
+      }
+    }
+    expressionPattern.lastIndex = end + 1;
+  }
+  return diagnostics;
 }
 
 function validateTemplate(text) {
@@ -80,7 +134,7 @@ function validateTemplate(text) {
       length: block.length
     });
   }
-  return diagnostics;
+  return [...diagnostics, ...validateBuiltins(source)];
 }
 
 module.exports = { validateTemplate };

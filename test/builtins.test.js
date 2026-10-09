@@ -2,11 +2,13 @@ const assert = require('assert');
 const grammar = require('../syntaxes/freemarker.tmLanguage.json');
 const {
   BUILTINS,
+  builtinBefore,
   builtinGrammarPattern,
   builtinNameStart,
   builtinSignature,
   camelCaseName,
-  findBuiltin
+  findBuiltin,
+  suggestBuiltin
 } = require('../builtins');
 
 const names = BUILTINS.map((builtin) => builtin.name);
@@ -38,6 +40,17 @@ assert.strictEqual(builtinNameStart('?'), 1);
 assert.strictEqual(builtinNameStart('${name??'), -1);
 assert.strictEqual(builtinNameStart('${name'), -1);
 assert.strictEqual(builtinNameStart('${name?trim.'), -1);
+
+assert.strictEqual(builtinBefore('${name?replace'), findBuiltin('replace'));
+assert.strictEqual(builtinBefore('${name?replace '), findBuiltin('replace'));
+assert.strictEqual(builtinBefore('${name?'), undefined);
+assert.strictEqual(builtinBefore('${replace'), undefined);
+
+assert.strictEqual(suggestBuiltin('uper_case'), 'upper_case');
+assert.strictEqual(suggestBuiltin('lenght'), 'length');
+assert.strictEqual(suggestBuiltin('uperCase'), 'upperCase');
+assert.strictEqual(suggestBuiltin('x'), undefined);
+assert.strictEqual(suggestBuiltin('json'), undefined);
 
 const grammarRule = grammar.repository.expression.patterns
   .find((pattern) => pattern.name === 'support.function.builtin.freemarker');
