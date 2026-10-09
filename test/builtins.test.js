@@ -17,7 +17,7 @@ assert.deepStrictEqual(names, [...names].sort((left, right) => left.localeCompar
 assert(BUILTINS.every((builtin) => /^[a-z]+(_[a-z]+)*$/.test(builtin.name)));
 assert(BUILTINS.every((builtin) => builtin.category && builtin.description));
 
-for (const name of ['upper_case', 'has_next', 'is_string', 'seq_contains', 'iso_utc', 'iso_local_ms_nz', 'no_esc']) {
+for (const name of ['dedent', 'indent', 'wrap', 'lines', 'empty_to_null', 'blank_to_null', 'trim_to_null', 'upper_case', 'has_next', 'is_string', 'seq_contains', 'iso_utc', 'iso_local_ms_nz', 'no_esc']) {
   assert(findBuiltin(name), name);
 }
 for (const name of ['json', 'is_defined', 'is_empty', 'loop', 'method', 'template_name']) {
@@ -32,6 +32,7 @@ assert.strictEqual(findBuiltin('html').deprecated, true);
 assert.strictEqual(findBuiltin('trim').deprecated, false);
 
 assert.strictEqual(builtinSignature(findBuiltin('trim')), 'trim');
+assert.strictEqual(builtinSignature(findBuiltin('wrap')), 'wrap(width, firstPrefix?, otherPrefix?)');
 assert.strictEqual(builtinSignature(findBuiltin('replace')), 'replace(from, to, flags?)');
 
 assert.strictEqual(builtinNameStart('${name?'), 7);

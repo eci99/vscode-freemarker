@@ -1101,6 +1101,8 @@ async function run() {
   assert.strictEqual((await builtinHelpAt('${item?item_cycle("a", "b", "c", "d", ')).activeParameter, 2);
   assert.strictEqual((await builtinHelpAt('${title?left_pad(title?index_of(')).signatures[0].label, '?index_of(substring, fromIndex?)');
   assert.strictEqual(await builtinHelpAt('${title?trim('), undefined);
+  assert.strictEqual((await builtinHelpAt('${title?wrap(40, ')).signatures[0].label, '?wrap(width, firstPrefix?, otherPrefix?)');
+  assert.strictEqual((await builtinHelpAt('${title?wrap(40, ')).activeParameter, 1);
   assert.strictEqual(await builtinHelpAt('${title?replace("a", "b")'), undefined);
   assert.strictEqual(await builtinHelpAt('${replace('), undefined);
 
@@ -1123,6 +1125,7 @@ async function run() {
   assert.deepStrictEqual(await firstBuiltins('<#list items as item>${item?'), Array(3).fill('loop variable built-in'));
   assert.deepStrictEqual(await firstBuiltins('${"text"?'), Array(3).fill('string built-in'));
   assert.deepStrictEqual(await firstBuiltins('${12.5?'), Array(3).fill('number built-in'));
+  assert.deepStrictEqual(await firstBuiltins('${0xFF?'), Array(3).fill('number built-in'));
   assert.deepStrictEqual(await firstBuiltins('<#assign title = "Home">\n${title?trim?'), ['number built-in', 'expert built-in', 'node built-in']);
   assert.deepStrictEqual(await firstBuiltins('${unknown?'), ['number built-in', 'expert built-in', 'node built-in']);
 

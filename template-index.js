@@ -189,7 +189,7 @@ function matchingClose(text, start) {
 function literalType(expression) {
   const text = expression.trim();
   if (/^r?(["'])(?:\\.|(?!\1)[^\\])*\1$/.test(text)) return 'string';
-  if (/^-?\d+(?:\.\d+)?$/.test(text)) return 'number';
+  if (/^[-+]?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)$/.test(text)) return 'number';
   if (/^(?:true|false)$/.test(text)) return 'boolean';
   if ((text[0] === '[' || text[0] === '{') && matchingClose(text, 0) === text.length - 1) {
     return text[0] === '[' ? 'sequence' : 'hash';

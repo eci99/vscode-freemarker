@@ -24,6 +24,8 @@ assert.deepStrictEqual(validateTemplate('${name?upper_case} ${name?upperCase} ${
 assert.deepStrictEqual(validateTemplate('<#if name?has_content && items?size gt 0>${amount?string.currency}</#if>'), []);
 assert.deepStrictEqual(validateTemplate('<a href="page?unknown=1">${"a?unknown"}</a> <#-- ${name?unknown} -->'), []);
 
+assert.deepStrictEqual(validateTemplate('${text?dedent?indent("  ")?wrap(0x50)?lines?size} ${name?empty_to_null!"-"}'), []);
+
 const unknownBuiltin = validateTemplate('line\n${name?uper_case}');
 assert.strictEqual(unknownBuiltin.length, 1);
 assert.strictEqual(unknownBuiltin[0].message, 'Unknown built-in ?uper_case. Did you mean ?upper_case?');

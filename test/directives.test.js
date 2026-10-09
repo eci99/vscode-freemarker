@@ -29,6 +29,13 @@ for (const [name, parents] of Object.entries(BRANCH_PARENTS)) {
 const variableNames = SPECIAL_VARIABLES.map((variable) => variable.name);
 assert.strictEqual(new Set(variableNames).size, variableNames.length);
 assert(findSpecialVariable('now'));
+assert(findSpecialVariable('current_node'));
+
+const numberRule = grammar.repository.expression.patterns
+  .find((pattern) => pattern.name === 'constant.numeric.freemarker');
+for (const literal of ['0xFF', '0XcafeBABE', '008', '5.013']) {
+  assert.strictEqual(new RegExp(numberRule.match).exec(`\${${literal}}`)[0], literal);
+}
 assert.strictEqual(findSpecialVariable('mainTemplateName'), findSpecialVariable('main_template_name'));
 assert.strictEqual(findSpecialVariable('unknown'), undefined);
 

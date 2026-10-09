@@ -1195,7 +1195,7 @@ class TemplateWorkspaceIndex {
   // The type of the expression a built-in is applied to, named like the built-in categories.
   builtinTargetType(record, target) {
     if (/["']$/.test(target)) return 'string';
-    const literal = /(?:^|[^A-Za-z0-9_.?])(\d+(?:\.\d+)?|true|false)$/.exec(target);
+    const literal = /(?:^|[^A-Za-z0-9_.?])(0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?|true|false)$/.exec(target);
     if (literal) return literalType(literal[1]);
 
     const chain = /(^|[^A-Za-z0-9_.?\])])((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)$/.exec(target);

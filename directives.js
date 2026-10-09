@@ -79,6 +79,7 @@ const specialVariableRows = [
   ['auto_esc', 'Whether auto-escaping is on at this point of the template.'],
   ['caller_template_name', 'The name of the template that called the current macro or function.'],
   ['current_template_name', 'The name of the template that contains this expression.'],
+  ['current_node', 'Same as `.node`.'],
   ['data_model', 'A hash for accessing the data-model directly, bypassing template variables.'],
   ['error', 'The error message inside `<#recover>`.'],
   ['get_optional_template', 'A method that loads a template only if it exists.'],
