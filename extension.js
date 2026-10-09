@@ -477,6 +477,111 @@ class TemplateWorkspaceIndex {
     return undefined;
   }
 
+  async hover(document, position) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const offset = document.offsetAt(position);
+    const words = /[A-Za-z_][A-Za-z0-9_]*/g;
+    let selectedWord;
+    let match;
+    while ((match = words.exec(record.source)) !== null) {
+      if (offset >= match.index && offset <= match.index + match[0].length) {
+        selectedWord = { name: match[0], start: match.index, end: match.index + match[0].length };
+        break;
+      }
+    }
+    if (!selectedWord) return undefined;
+
+    const chains = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g;
+    let chain;
+    while ((chain = chains.exec(record.source)) !== null) {
+      if (offset >= chain.index && offset <= chain.index + chain[0].length) break;
+    }
+
+    let symbolRecord = record;
+    let symbol;
+    let namespaceName;
+    let namespaceRecord;
+    if (chain && chain[0].includes('.')) {
+      const segments = chain[0].split('.');
+      const selectedIndex = segments.findIndex((_, index) => {
+        const segmentStart = chain.index + segments.slice(0, index).reduce((length, segment) => length + segment.length + 1, 0);
+        return offset >= segmentStart && offset <= segmentStart + segments[index].length;
+      });
+
+      if (selectedIndex === 0) {
+        namespaceName = segments[0];
+        namespaceRecord = this.resolveNamespaceRecord(record, [namespaceName]);
+      } else {
+        const parent = this.resolveNamespaceRecord(record, segments.slice(0, selectedIndex));
+        const candidateNamespace = parent && this.importedRecord(parent, segments[selectedIndex]);
+        if (candidateNamespace) {
+          namespaceName = segments.slice(0, selectedIndex + 1).join('.');
+          namespaceRecord = candidateNamespace;
+        } else {
+          const localPath = segments.join('.');
+          const local = this.includedSymbols(record).find(({ symbol: item }) =>
+            item.kind === 'variable' && item.name === localPath
+          );
+          const member = local || (parent && this.includedSymbols(parent).find(({ symbol: item }) =>
+            item.name === segments[selectedIndex]
+          ));
+          if (member) {
+            symbolRecord = member.record;
+            symbol = member.symbol;
+          }
+        }
+      }
+    } else {
+      const declared = record.symbols.find((item) =>
+        offset >= item.offset && offset <= item.offset + item.length
+      );
+      const local = declared && { symbol: declared, record };
+      const visible = local || this.includedSymbols(record).find(({ symbol: item }) => item.name === selectedWord.name);
+      if (visible) {
+        symbol = visible.symbol;
+        symbolRecord = visible.record;
+      } else {
+        const namespace = this.namespaceDeclarations(record, true).find(({ symbol: item }) =>
+          item.kind === 'namespace' && item.name === selectedWord.name
+        );
+        if (namespace) {
+          namespaceName = namespace.symbol.name;
+          namespaceRecord = namespace.record;
+        }
+      }
+    }
+
+    const range = new vscode.Range(document.positionAt(selectedWord.start), document.positionAt(selectedWord.end));
+    if (namespaceRecord) {
+      const members = this.namespaceDeclarations(namespaceRecord)
+        .map(({ symbol: item }) => `\`${item.name}${item.kind === 'function' || item.kind === 'macro' ? '()' : ''}\``)
+        .join(', ');
+      const memberList = members ? `\n\nMembers: ${members}` : '';
+      return new vscode.Hover(new vscode.MarkdownString(
+        `**Namespace \`${namespaceName}\`**\n\nTemplate: \`${path.basename(namespaceRecord.uri.fsPath)}\`${memberList}`
+      ), range);
+    }
+    if (!symbol) return undefined;
+
+    const parts = [`**${symbol.kind} ${symbol.name}**`];
+    if (symbol.documentation) parts.push(symbol.documentation);
+    if (symbol.kind === 'variable') {
+      if (typeof symbol.value === 'string') parts.push(`Value: \`${symbol.value.replace(/`/g, '\\`')}\``);
+      if (symbol.declaration) parts.push(`\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
+    } else {
+      if (symbol.declaration) parts.push(`\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
+      if (symbol.parameters && symbol.parameters.length) {
+        const parameters = symbol.parameters.map(({ name, defaultValue }) =>
+          defaultValue === undefined ? `- \`${name}\` (Required)` : `- \`${name}\` = \`${defaultValue}\``
+        );
+        parts.push(`Parameters\n\n${parameters.join('\n')}`);
+      }
+    }
+    parts.push(`Source: \`${path.basename(symbolRecord.uri.fsPath)}\``);
+    return new vscode.Hover(new vscode.MarkdownString(parts.join('\n\n')), range);
+  }
+
   async symbolAt(document, position) {
     await this.ready;
     const record = this.currentRecord(document);
@@ -680,6 +785,9 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider({ language: 'freemarker' }, {
       provideDefinition: (document, position) => index.definition(document, position)
+    }),
+    vscode.languages.registerHoverProvider({ language: 'freemarker' }, {
+      provideHover: (document, position) => index.hover(document, position)
     }),
     vscode.languages.registerReferenceProvider({ language: 'freemarker' }, {
       provideReferences: (document, position) => index.references(document, position)

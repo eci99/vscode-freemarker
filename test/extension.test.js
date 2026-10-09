@@ -14,6 +14,7 @@ const files = new Map([
     '${greeting}',
     '${settings.editor.fontSize}',
     '${settings.editor.fontSize}',
+    '${cards.total}',
     '<#list products as product>${product}</#list>',
     '<@cards.render>card</@cards.render>',
     '${cards.salutation}',
@@ -78,6 +79,13 @@ class Location {
   }
 }
 
+class Hover {
+  constructor(contents, range) {
+    this.contents = Array.isArray(contents) ? contents : [contents];
+    this.range = range;
+  }
+}
+
 class Document {
   constructor(targetUri, text) {
     this.uri = targetUri;
@@ -109,6 +117,7 @@ const vscode = {
   Position,
   Range,
   Location,
+  Hover,
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
@@ -149,6 +158,10 @@ const vscode = {
   languages: {
     registerDefinitionProvider: (_selector, provider) => {
       providers.definition = provider;
+      return disposable;
+    },
+    registerHoverProvider: (_selector, provider) => {
+      providers.hover = provider;
       return disposable;
     },
     registerReferenceProvider: (_selector, provider) => {
@@ -198,6 +211,36 @@ async function run() {
   const memberDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, memberOffset));
   assert.strictEqual(memberDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
   assert.strictEqual(memberDefinition.range.start.character, '<#macro '.length);
+
+  const namespaceHover = await providers.hover.provideHover(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.render') + 1)
+  );
+  assert(namespaceHover.contents[0].value.includes('Namespace `cards`'));
+  assert(namespaceHover.contents[0].value.includes('Template: `cards.ftl`'));
+
+  const macroHover = await providers.hover.provideHover(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.render') + 'cards.'.length + 1)
+  );
+  assert(macroHover.contents[0].value.includes('macro render'));
+  assert(macroHover.contents[0].value.includes('Renders a card with configurable styling.'));
+  assert(macroHover.contents[0].value.includes('className'));
+
+  const variableHover = await providers.hover.provideHover(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.theme') + 'cards.'.length + 1)
+  );
+  assert(variableHover.contents[0].value.includes('variable theme'));
+  assert(variableHover.contents[0].value.includes('Value: `"blue"`'));
+
+  const functionHover = await providers.hover.provideHover(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.total') + 'cards.'.length + 1)
+  );
+  assert(functionHover.contents[0].value.includes('function total'));
+  assert(functionHover.contents[0].value.includes('Calculates a total from the supplied values.'));
+  assert(functionHover.contents[0].value.includes('precision'));
 
   const closingNamespaceOffset = mainText.indexOf('</@cards.render>') + '</@cards.'.length + 1;
   const closingNamespaceDefinition = await providers.definition.provideDefinition(
