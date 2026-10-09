@@ -1,6 +1,7 @@
 const path = require('path');
 const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
+const { BUILTINS, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
 const { formatTemplate } = require('./formatter');
 const { parseTemplate } = require('./template-index');
 const { validateTemplate } = require('./validator');
@@ -641,6 +642,24 @@ class TemplateWorkspaceIndex {
     }
     if (!selectedWord) return undefined;
 
+    const beforeWord = record.source.slice(Math.max(0, selectedWord.start - 2), selectedWord.start);
+    if (builtinNameStart(beforeWord) >= 0
+      && this.isFreeMarkerExpression(record.source, selectedWord.start, offset)) {
+      const builtin = findBuiltin(selectedWord.name);
+      if (!builtin) return undefined;
+      const parts = [
+        `**built-in ${builtin.name}**`,
+        builtin.description,
+        `\`\`\`ftl\n?${builtinSignature(builtin)}\n\`\`\``,
+        `Applies to: ${builtin.category}`
+      ];
+      if (builtin.deprecated) parts.push('Deprecated');
+      return new vscode.Hover(
+        new vscode.MarkdownString(parts.join('\n\n')),
+        new vscode.Range(document.positionAt(selectedWord.start), document.positionAt(selectedWord.end))
+      );
+    }
+
     const chains = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g;
     let chain;
     while ((chain = chains.exec(record.source)) !== null) {
@@ -902,11 +921,28 @@ class TemplateWorkspaceIndex {
     return edit;
   }
 
+  builtinCompletions() {
+    return BUILTINS.map((builtin) => {
+      const item = new vscode.CompletionItem(builtinSignature(builtin), vscode.CompletionItemKind.Function);
+      item.detail = `${builtin.category} built-in`;
+      item.documentation = new vscode.MarkdownString(builtin.description);
+      item.filterText = builtin.name;
+      item.insertText = builtin.name;
+      item.sortText = builtin.name;
+      if (builtin.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
+      return item;
+    });
+  }
+
   async completions(document, position) {
     await this.ready;
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
+    const builtinStart = builtinNameStart(beforeCursor);
+    if (builtinStart >= 0 && this.isFreeMarkerExpression(record.source, builtinStart, offset)) {
+      return this.builtinCompletions();
+    }
     const macroArguments = this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
     const functionArguments = this.functionArgumentCompletions(record, beforeCursor);
@@ -1045,7 +1081,7 @@ function activate(context) {
     }, '(', ','),
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position) => index.completions(document, position)
-    }, '.', '@', ' '),
+    }, '.', '@', ' ', '?'),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
       provideDocumentFormattingEdits: (document, options) => {
         const formatted = formatTemplate(document.getText(), options);

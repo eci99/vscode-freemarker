@@ -171,6 +171,7 @@ const vscode = {
   SymbolKind: { Function: 11, Method: 5, Variable: 12, Namespace: 2, Module: 1, File: 0 },
   Diagnostic,
   DiagnosticSeverity: { Error: 0 },
+  CompletionItemTag: { Deprecated: 1 },
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
@@ -1007,6 +1008,37 @@ async function run() {
 
   const outsideHelp = await providers.signatureHelp.provideSignatureHelp(document, positionAt(mainText, 0));
   assert.strictEqual(outsideHelp, undefined);
+
+  const builtinUri = uri('/virtual/work/pages/builtins.ftl');
+  const builtinCompletionsAt = (text) => {
+    const builtinDocument = new Document(builtinUri, text);
+    return providers.completion.provideCompletionItems(builtinDocument, builtinDocument.positionAt(text.length));
+  };
+  assert(providers.completionTriggerCharacters.includes('?'));
+  const builtinCompletions = await builtinCompletionsAt('<#assign title = "Home">\n${title?');
+  assert(builtinCompletions.some((item) => item.insertText === 'upper_case' && item.detail === 'string built-in'));
+  assert(builtinCompletions.some((item) => item.label === 'replace(from, to, flags?)' && item.insertText === 'replace'));
+  assert(builtinCompletions.some((item) => item.insertText === 'html' && item.tags.includes(vscode.CompletionItemTag.Deprecated)));
+  assert(!builtinCompletions.some((item) => item.insertText === 'title'));
+  assert((await builtinCompletionsAt('<#if title?up')).some((item) => item.insertText === 'upper_case'));
+  assert((await builtinCompletionsAt('<@panel label=title?')).some((item) => item.insertText === 'upper_case'));
+  assert(!(await builtinCompletionsAt('${title??')).some((item) => item.insertText === 'upper_case'));
+  assert(!(await builtinCompletionsAt('<a href="page?')).some((item) => item.insertText === 'upper_case'));
+  assert(!(await builtinCompletionsAt('${"page?')).some((item) => item.insertText === 'upper_case'));
+
+  const builtinHoverAt = (text, word) => {
+    const builtinDocument = new Document(builtinUri, text);
+    return providers.hover.provideHover(builtinDocument, builtinDocument.positionAt(text.indexOf(word) + 1));
+  };
+  const builtinHover = await builtinHoverAt('${title?replace("a", "b")}', 'replace');
+  assert(builtinHover.contents[0].value.includes('**built-in replace**'));
+  assert(builtinHover.contents[0].value.includes('?replace(from, to, flags?)'));
+  assert(builtinHover.contents[0].value.includes('Applies to: string'));
+  assert.deepStrictEqual(builtinHover.range.start, new Position(0, 8));
+  assert((await builtinHoverAt('${title?upperCase}', 'upperCase')).contents[0].value.includes('**built-in upper_case**'));
+  assert((await builtinHoverAt('${title?html}', 'html')).contents[0].value.includes('Deprecated'));
+  assert.strictEqual(await builtinHoverAt('${title?unknown_name}', 'unknown_name'), undefined);
+  assert.strictEqual(await builtinHoverAt('<a href="page?trim">', 'trim'), undefined);
 
   console.log('Extension integration tests passed.');
 }

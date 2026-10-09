@@ -16,6 +16,7 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 - Function arguments suggest in-scope variables and namespaces without snippets; documentation lists the full signature, highlights the current parameter, and substitutes values already entered at the call site
 - Go to Definition for imported namespace members, simple and capture-assigned variables, loop variables, nested hash fields, and included templates; Go to Definition on a macro or function declaration navigates directly to its call sites
 - Hover documentation for namespace aliases, variables, macros, and functions
+- Built-in completion after `?` in FreeMarker expressions, with hover documentation and highlighting for snake case and camel case names; deprecated built-ins are marked
 - The first paragraph of a comment immediately before or inline after a variable declaration is included in its hover
 - Signature Help for function calls with parameter details, default values, documentation, and active parameter highlighting
 - Find All References for variables and macros/functions across namespace imports and includes
@@ -34,4 +35,4 @@ Open this folder in VS Code and press `F5` to launch an Extension Development Ho
 
 ## Tests and packaging
 
-Run the parser tests with `node ./test/template-index.test.js`. Package the extension with `npx @vscode/vsce package` in an environment with a supported Node.js/npm version.
+Run the parser tests with `node ./test/template-index.test.js`. The built-in list lives in `builtins.js`; `node ./test/builtins.test.js` fails if the highlighting pattern in `syntaxes/freemarker.tmLanguage.json` no longer matches it. Package the extension with `npx @vscode/vsce package` in an environment with a supported Node.js/npm version.
