@@ -174,14 +174,33 @@ class TemplateWorkspaceIndex {
     return declarations;
   }
 
-  macroArgumentCompletions(record, source) {
-    const tagStart = source.lastIndexOf('<@');
-    if (tagStart < 0 || source[tagStart - 1] === '/' || source.lastIndexOf('>') > tagStart) return undefined;
-
-    const invocation = /^([A-Za-z_][A-Za-z0-9_.]*)([\s\S]*)$/.exec(source.slice(tagStart + 2));
-    if (!invocation || !/^\s/.test(invocation[2])) return undefined;
+  macroArgumentCompletions(record, source, cursorOffset) {
+    const beforeCursor = source.slice(0, cursorOffset);
+    const tagStart = beforeCursor.lastIndexOf('<@');
+    if (tagStart < 0 || source[tagStart - 1] === '/') return undefined;
+    const typedInvocation = /^([A-Za-z_][A-Za-z0-9_.]*)(\s+)/.exec(beforeCursor.slice(tagStart + 2));
+    if (!typedInvocation) return undefined;
 
     let quote = null;
+    let tagEnd = -1;
+    for (let index = tagStart + 2; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '>') {
+        tagEnd = index;
+        break;
+      }
+    }
+    if (tagEnd >= 0 && cursorOffset > tagEnd) return undefined;
+
+    const invocationText = source.slice(tagStart + 2, tagEnd < 0 ? source.length : tagEnd);
+    const invocation = /^([A-Za-z_][A-Za-z0-9_.]*)([\s\S]*)$/.exec(invocationText);
+    if (!invocation || !/^\s/.test(invocation[2])) return undefined;
+
+    quote = null;
     for (let index = 0; index < invocation[2].length; index += 1) {
       const character = invocation[2][index];
       if (quote) {
@@ -201,9 +220,34 @@ class TemplateWorkspaceIndex {
     if (!declaration || declaration.symbol.kind !== 'macro') return undefined;
 
     const usedParameters = new Set();
-    const assignedParameter = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
-    let match;
-    while ((match = assignedParameter.exec(invocation[2])) !== null) usedParameters.add(match[1]);
+    let nesting = 0;
+    for (let index = 0; index < invocation[2].length; index += 1) {
+      const character = invocation[2][index];
+      if (quote) {
+        if (character === quote && invocation[2][index - 1] !== '\\') quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character === '(' || character === '[' || character === '{') {
+        nesting += 1;
+        continue;
+      }
+      if (character === ')' || character === ']' || character === '}') {
+        nesting = Math.max(0, nesting - 1);
+        continue;
+      }
+      if (nesting > 0 || !/[A-Za-z_]/.test(character) || (index > 0 && !/\s/.test(invocation[2][index - 1]))) continue;
+
+      const nameStart = index;
+      while (/[A-Za-z0-9_]/.test(invocation[2][index] || '')) index += 1;
+      const name = invocation[2].slice(nameStart, index);
+      while (/\s/.test(invocation[2][index] || '')) index += 1;
+      if (invocation[2][index] === '=') usedParameters.add(name);
+      index -= 1;
+    }
 
     return declaration.symbol.parameters
       .filter(({ name }) => !usedParameters.has(name))
@@ -216,6 +260,104 @@ class TemplateWorkspaceIndex {
         item.sortText = name.toLowerCase();
         return item;
       });
+  }
+
+  functionArgumentCompletions(record, source) {
+    const parentheses = [];
+    let quote = null;
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '(') {
+        parentheses.push(index);
+      } else if (character === ')') {
+        parentheses.pop();
+      }
+    }
+
+    const opening = parentheses[parentheses.length - 1];
+    if (opening === undefined || !this.isFreeMarkerExpression(source, opening, source.length)) return undefined;
+    const functionMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(source.slice(0, opening));
+    if (!functionMatch) return undefined;
+
+    const functionPath = functionMatch[1].split('.');
+    const declaration = functionPath.length > 1
+      ? this.resolveNamespaceMember(record, functionPath)
+      : this.includedSymbols(record).find(({ symbol }) =>
+        symbol.kind === 'function' && symbol.name === functionPath[0]
+      );
+    if (!declaration || declaration.symbol.kind !== 'function') return undefined;
+
+    let argumentIndex = 0;
+    let nesting = 0;
+    quote = null;
+    const suppliedArguments = [];
+    let argumentStart = opening + 1;
+    for (let index = opening + 1; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '(' || character === '[' || character === '{') {
+        nesting += 1;
+      } else if (character === ')' || character === ']' || character === '}') {
+        if (nesting === 0) {
+          suppliedArguments.push(source.slice(argumentStart, index).trim());
+          break;
+        }
+        nesting -= 1;
+      } else if (character === ',' && nesting === 0) {
+        suppliedArguments.push(source.slice(argumentStart, index).trim());
+        argumentStart = index + 1;
+        argumentIndex += 1;
+      }
+    }
+    if (argumentStart <= source.length && suppliedArguments.length === argumentIndex) {
+      suppliedArguments.push(source.slice(argumentStart).trim());
+    }
+
+    const parameter = declaration.symbol.parameters[argumentIndex];
+    if (!parameter) return [];
+    const parameterList = declaration.symbol.parameters.map(({ name, defaultValue }, index) => {
+      const suppliedValue = suppliedArguments[index];
+      const parameterText = suppliedValue
+        ? `\`${name}\` = \`${suppliedValue.replace(/`/g, '\\`')}\``
+        : defaultValue === undefined
+          ? `\`${name}\` (Required)`
+          : `\`${name}\` = \`${defaultValue.replace(/`/g, '\\`')}\``;
+      return index === argumentIndex ? `- **${parameterText}**` : `- ${parameterText}`;
+    }).join('\n');
+
+    const candidates = this.namespaceDeclarations(record, true)
+      .filter(({ symbol }) => symbol.kind === 'variable' || symbol.kind === 'namespace');
+    const seen = new Set();
+    return candidates.filter(({ symbol }) => {
+      if (seen.has(symbol.name)) return false;
+      seen.add(symbol.name);
+      return true;
+    }).map(({ symbol, record: sourceRecord }) => {
+      const kind = symbol.kind === 'namespace'
+        ? vscode.CompletionItemKind.Module
+        : vscode.CompletionItemKind.Variable;
+      const value = typeof symbol.value === 'string' ? symbol.value.replace(/\s+/g, ' ').trim() : undefined;
+      const label = symbol.kind === 'variable' && value !== undefined
+        ? `${symbol.name} = ${value.length > 60 ? `${value.slice(0, 57)}...` : value}`
+        : symbol.name;
+      const item = new vscode.CompletionItem(label, kind);
+      item.insertText = symbol.name;
+      item.detail = path.basename(sourceRecord.uri.fsPath);
+      item.documentation = new vscode.MarkdownString(
+        `Arguments for ${declaration.symbol.name}\n\n${parameterList}`
+      );
+      item.sortText = `${symbol.kind === 'namespace' ? '0' : '1'}_${symbol.name.toLowerCase()}`;
+      return item;
+    });
   }
 
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
@@ -409,8 +551,10 @@ class TemplateWorkspaceIndex {
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
-    const macroArguments = this.macroArgumentCompletions(record, beforeCursor);
+    const macroArguments = this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
+    const functionArguments = this.functionArgumentCompletions(record, beforeCursor);
+    if (functionArguments !== undefined) return functionArguments;
     const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 

@@ -44,6 +44,7 @@ const files = new Map([
   ].join('\n')],
   ['/virtual/work/lib/nested.ftl', [
     '<#macro render>nested</#macro>',
+    '<#function funcTest wert fallback="standard">wert</#function>',
     '<#assign label = "Nested">'
   ].join('\n')],
   ['/virtual/work/lib/toolkit-shared.ftl', '<#macro included>included</#macro>'],
@@ -319,6 +320,67 @@ async function run() {
   assert.strictEqual(completions.find((item) => item.insertText === 'theme').detail, 'cards.ftl');
   assert.strictEqual(completions.find((item) => item.insertText === 'render').kind, vscode.CompletionItemKind.Method);
 
+  const expressionCompletionDocument = new Document(mainUri, `${mainText}\n\${cards.`);
+  const expressionCompletions = await providers.completion.provideCompletionItems(
+    expressionCompletionDocument,
+    expressionCompletionDocument.positionAt(expressionCompletionDocument.getText().length)
+  );
+  assert(expressionCompletions.some((item) => item.insertText === 'total'));
+  assert.strictEqual(expressionCompletions.find((item) => item.insertText === 'total').kind, vscode.CompletionItemKind.Function);
+
+  const nestedExpressionCompletionDocument = new Document(mainUri, `${mainText}\n\${toolkit.nested.`);
+  const nestedExpressionCompletions = await providers.completion.provideCompletionItems(
+    nestedExpressionCompletionDocument,
+    nestedExpressionCompletionDocument.positionAt(nestedExpressionCompletionDocument.getText().length)
+  );
+  assert(nestedExpressionCompletions.some((item) => item.insertText === 'funcTest'));
+  assert.strictEqual(
+    nestedExpressionCompletions.find((item) => item.insertText === 'funcTest').kind,
+    vscode.CompletionItemKind.Function
+  );
+
+  const functionArgumentDocument = new Document(mainUri, `${mainText}\n\${toolkit.nested.funcTest(`);
+  const functionArgumentCompletions = await providers.completion.provideCompletionItems(
+    functionArgumentDocument,
+    functionArgumentDocument.positionAt(functionArgumentDocument.getText().length)
+  );
+  assert(functionArgumentCompletions.some((item) => item.insertText === 'pageTitle'));
+  assert(functionArgumentCompletions.some((item) => item.insertText === 'cards'));
+  assert(!functionArgumentCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
+  assert.strictEqual(
+    functionArgumentCompletions[0].documentation.value,
+    'Arguments for funcTest\n\n- **`wert` (Required)**\n- `fallback` = `"standard"`'
+  );
+  assert(functionArgumentCompletions.some((item) => item.label === 'pageTitle = "Home"'));
+  assert(functionArgumentCompletions.some((item) => item.label === 'cards'));
+  assert.strictEqual(functionArgumentCompletions[0].detail, 'main.ftl');
+  const secondFunctionArgumentDocument = new Document(
+    mainUri,
+    `${mainText}\n\${toolkit.nested.funcTest(pageTitle, `
+  );
+  const secondFunctionArgumentCompletions = await providers.completion.provideCompletionItems(
+    secondFunctionArgumentDocument,
+    secondFunctionArgumentDocument.positionAt(secondFunctionArgumentDocument.getText().length)
+  );
+  assert.strictEqual(
+    secondFunctionArgumentCompletions[0].documentation.value,
+    'Arguments for funcTest\n\n- `wert` = `pageTitle`\n- **`fallback` = `"standard"`**'
+  );
+
+  const literalFunctionArgumentDocument = new Document(
+    mainUri,
+    `${mainText}\n\${toolkit.nested.funcTest("wert", `
+  );
+  const literalFunctionArgumentCompletions = await providers.completion.provideCompletionItems(
+    literalFunctionArgumentDocument,
+    literalFunctionArgumentDocument.positionAt(literalFunctionArgumentDocument.getText().length)
+  );
+  assert.strictEqual(
+    literalFunctionArgumentCompletions[0].documentation.value,
+    'Arguments for funcTest\n\n- `wert` = `"wert"`\n- **`fallback` = `"standard"`**'
+  );
+  assert(secondFunctionArgumentCompletions.some((item) => item.label === 'pageTitle = "Home"'));
+
   const macroCallDocument = new Document(mainUri, `${mainText}\n<@cards.render `);
   const macroArgumentCompletions = await providers.completion.provideCompletionItems(
     macroCallDocument,
@@ -336,6 +398,16 @@ async function run() {
   );
   assert.deepStrictEqual(unusedMacroArgumentCompletions.map((item) => item.label), ['className="button"']);
   assert.strictEqual(unusedMacroArgumentCompletions[0].insertText, 'className=');
+
+  const laterMacroArgumentDocument = new Document(mainUri, `${mainText}\n<@cards.render title="Later" className="primary">`);
+  const beforeLaterArgumentPosition = laterMacroArgumentDocument.positionAt(
+    laterMacroArgumentDocument.getText().lastIndexOf('<@cards.render ') + '<@cards.render '.length
+  );
+  const laterMacroArgumentCompletions = await providers.completion.provideCompletionItems(
+    laterMacroArgumentDocument,
+    beforeLaterArgumentPosition
+  );
+  assert.deepStrictEqual(laterMacroArgumentCompletions, []);
   assert(providers.completionTriggerCharacters.includes(' '));
 
   const snippetDocument = new Document(mainUri, `${mainText}\nass`);

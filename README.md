@@ -10,6 +10,7 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 - Variable completion labels include known assigned values
 - Macro and function completion details include declared parameters and default values
 - Named macro-call arguments are suggested as `name=` and already supplied arguments are omitted
+- Function arguments suggest in-scope variables and namespaces without snippets; documentation lists the full signature, highlights the current parameter, and substitutes values already entered at the call site
 - Go to Definition for imported namespace members, simple and capture-assigned variables, loop variables, nested hash fields, and included templates
 - Find All References for variables and macros/functions across namespace imports and includes
 - Workspace indexing that updates as template files are opened, edited, created, or deleted
