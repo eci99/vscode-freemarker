@@ -268,6 +268,7 @@ function parseTemplate(text) {
         ? directivePattern.lastIndex + pathMatch.index + pathMatch[0].length + aliasMatch.index + aliasMatch[0].lastIndexOf(aliasMatch[1])
         : null,
       offset: match.index,
+      endOffset: end + 1,
       pathOffset,
       pathLength: pathMatch[2].length
     });

@@ -92,6 +92,17 @@ class Hover {
   }
 }
 
+class DocumentSymbol {
+  constructor(name, detail, kind, range, selectionRange) {
+    this.name = name;
+    this.detail = detail;
+    this.kind = kind;
+    this.range = range;
+    this.selectionRange = selectionRange;
+    this.children = [];
+  }
+}
+
 class Diagnostic {
   constructor(range, message, severity) {
     this.range = range;
@@ -136,6 +147,8 @@ const vscode = {
   Range,
   Location,
   Hover,
+  DocumentSymbol,
+  SymbolKind: { Function: 11, Method: 5, Variable: 12, Namespace: 2, Module: 1, File: 0 },
   Diagnostic,
   DiagnosticSeverity: { Error: 0 },
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
@@ -196,6 +209,10 @@ const vscode = {
       providers.definition = provider;
       return disposable;
     },
+    registerDocumentSymbolProvider: (_selector, provider) => {
+      providers.documentSymbols = provider;
+      return disposable;
+    },
     registerHoverProvider: (_selector, provider) => {
       providers.hover = provider;
       return disposable;
@@ -234,6 +251,39 @@ async function run() {
   const mainUri = uri('/virtual/work/pages/main.ftl');
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
+
+  const outlineSymbols = await providers.documentSymbols.provideDocumentSymbols(document);
+  const variableGroup = outlineSymbols.find((symbol) => symbol.name === '02 Variables');
+  const templateGroup = outlineSymbols.find((symbol) => symbol.name === '01 Imports & Includes');
+  assert(variableGroup);
+  assert(templateGroup);
+  assert(templateGroup.children.some((symbol) => symbol.name === 'cards' && symbol.detail === 'import ../lib/cards.ftl'));
+  assert(templateGroup.children.some((symbol) => symbol.name === 'shared.ftl' && symbol.detail === 'include shared.ftl'));
+  assert(!templateGroup.children.some((symbol) => symbol.name === 'hiddenNamespace'));
+  const cardsImportOffset = mainText.indexOf('as cards') + 'as '.length;
+  assert.deepStrictEqual(
+    templateGroup.children.find((symbol) => symbol.name === 'cards').selectionRange.start,
+    positionAt(mainText, cardsImportOffset)
+  );
+  assert(variableGroup.children.some((symbol) => symbol.name === 'pageTitle'));
+  assert(variableGroup.children.some((symbol) => symbol.name === 'settings'));
+  assert(!variableGroup.children.some((symbol) => symbol.name === 'fontSize'));
+  assert(!variableGroup.children.some((symbol) => symbol.name === 'product'));
+  const cardsOutline = await providers.documentSymbols.provideDocumentSymbols(
+    new Document(uri('/virtual/work/lib/cards.ftl'), files.get('/virtual/work/lib/cards.ftl'))
+  );
+  assert.deepStrictEqual(cardsOutline.map((symbol) => symbol.name), [
+    '01 Imports & Includes',
+    '02 Variables',
+    '03 Functions',
+    '04 Macros'
+  ]);
+  const macroGroup = cardsOutline.find((symbol) => symbol.name === '04 Macros');
+  const functionGroup = cardsOutline.find((symbol) => symbol.name === '03 Functions');
+  assert(macroGroup.children.some((symbol) => symbol.name === 'render' && symbol.kind === vscode.SymbolKind.Method));
+  assert(functionGroup.children.some((symbol) => symbol.name === 'total' && symbol.kind === vscode.SymbolKind.Function));
+  assert(!macroGroup.children.some((symbol) => symbol.name === 'macroOnly'));
+  assert(!functionGroup.children.some((symbol) => symbol.name === 'functionOnly'));
 
   const invalidDocument = new Document(mainUri, '<#if ready>\n</#list>');
   onDidOpenDocument(invalidDocument);

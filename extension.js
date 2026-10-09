@@ -430,6 +430,89 @@ class TemplateWorkspaceIndex {
     }, () => new vscode.Location(record.uri, startPosition));
   }
 
+  async documentSymbols(document) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const declarations = record.symbols
+      .filter((symbol) => symbol.topLevel !== false
+        && !symbol.name.includes('.')
+        && !/^<#(?:list|items)\b/.test(symbol.declaration || ''))
+      .map((symbol) => {
+        const declarationStart = symbol.declaration
+          ? record.source.lastIndexOf(symbol.declaration, symbol.offset)
+          : symbol.offset;
+        const rangeStart = declarationStart >= 0 ? declarationStart : symbol.offset;
+        const rangeEnd = symbol.declaration
+          ? rangeStart + symbol.declaration.length
+          : symbol.offset + symbol.length;
+        const kind = symbol.kind === 'macro'
+          ? vscode.SymbolKind.Method
+          : symbol.kind === 'function'
+            ? vscode.SymbolKind.Function
+            : vscode.SymbolKind.Variable;
+        return new vscode.DocumentSymbol(
+          symbol.name,
+          symbol.kind,
+          kind,
+          new vscode.Range(document.positionAt(rangeStart), document.positionAt(rangeEnd)),
+          new vscode.Range(
+            document.positionAt(symbol.offset),
+            document.positionAt(symbol.offset + symbol.length)
+          )
+        );
+      });
+    const templateDirectives = record.directives
+      .filter((directive) => directive.topLevel !== false)
+      .map((directive) => {
+        const name = directive.alias || directive.path;
+        const selectionStart = directive.alias ? directive.aliasOffset : directive.pathOffset;
+        const selectionLength = directive.alias ? directive.alias.length : directive.pathLength;
+        const kind = directive.kind === 'import'
+          ? vscode.SymbolKind.Module
+          : vscode.SymbolKind.File;
+        return new vscode.DocumentSymbol(
+          name,
+          `${directive.kind} ${directive.path}`,
+          kind,
+          new vscode.Range(
+            document.positionAt(directive.offset),
+            document.positionAt(directive.endOffset)
+          ),
+          new vscode.Range(
+            document.positionAt(selectionStart),
+            document.positionAt(selectionStart + selectionLength)
+          )
+        );
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const groups = [
+      { name: '01 Imports & Includes', kind: null, directives: true },
+      { name: '02 Variables', kind: 'variable' },
+      { name: '03 Functions', kind: 'function' },
+      { name: '04 Macros', kind: 'macro' }
+    ];
+    const documentRange = new vscode.Range(
+      document.positionAt(0),
+      document.positionAt(record.source.length)
+    );
+    return groups.flatMap(({ name, kind, directives }) => {
+      const children = declarations
+        .filter((symbol) => symbol.detail === kind)
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const groupChildren = directives ? templateDirectives : children;
+      if (!groupChildren.length) return [];
+      const group = new vscode.DocumentSymbol(
+        name,
+        '',
+        vscode.SymbolKind.Namespace,
+        documentRange,
+        new vscode.Range(document.positionAt(0), document.positionAt(0))
+      );
+      group.children = groupChildren;
+      return [group];
+    });
+  }
+
   async definition(document, position) {
     await this.ready;
     const record = this.currentRecord(document);
@@ -831,6 +914,9 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider({ language: 'freemarker' }, {
       provideDefinition: (document, position) => index.definition(document, position)
+    }),
+    vscode.languages.registerDocumentSymbolProvider({ language: 'freemarker' }, {
+      provideDocumentSymbols: (document) => index.documentSymbols(document)
     }),
     vscode.languages.registerHoverProvider({ language: 'freemarker' }, {
       provideHover: (document, position) => index.hover(document, position)

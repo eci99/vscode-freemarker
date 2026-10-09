@@ -70,5 +70,6 @@ assert.strictEqual(
   parsed.source.slice(parsed.directives[0].aliasOffset, parsed.directives[0].aliasOffset + 5),
   'cards'
 );
+assert.strictEqual(parsed.source[parsed.directives[0].endOffset - 1], '>');
 
 console.log('Template parser tests passed.');
