@@ -264,7 +264,7 @@ class TemplateWorkspaceIndex {
       });
   }
 
-  functionArgumentCompletions(record, source) {
+  functionCallContext(record, source, includePrivate = false) {
     const parentheses = [];
     let quote = null;
     for (let index = 0; index < source.length; index += 1) {
@@ -289,7 +289,7 @@ class TemplateWorkspaceIndex {
 
     const functionPath = functionMatch[1].split('.');
     const declaration = functionPath.length > 1
-      ? this.resolveNamespaceMember(record, functionPath)
+      ? this.resolveNamespaceMember(record, functionPath, includePrivate)
       : this.includedSymbols(record).find(({ symbol }) =>
         symbol.kind === 'function' && symbol.name === functionPath[0]
       );
@@ -304,7 +304,9 @@ class TemplateWorkspaceIndex {
       const character = source[index];
       if (quote) {
         if (character === quote && source[index - 1] !== '\\') quote = null;
-      } else if (character === '"' || character === "'") {
+        continue;
+      }
+      if (character === '"' || character === "'") {
         quote = character;
       } else if (character === '(' || character === '[' || character === '{') {
         nesting += 1;
@@ -323,6 +325,16 @@ class TemplateWorkspaceIndex {
     if (argumentStart <= source.length && suppliedArguments.length === argumentIndex) {
       suppliedArguments.push(source.slice(argumentStart).trim());
     }
+
+    return { declaration, argumentIndex, suppliedArguments };
+  }
+
+  functionArgumentCompletions(record, source) {
+    const context = this.functionCallContext(record, source);
+    if (!context) return undefined;
+
+    const { declaration, argumentIndex, suppliedArguments } = context;
+
 
     const parameter = declaration.symbol.parameters[argumentIndex];
     if (!parameter) return [];
@@ -360,6 +372,39 @@ class TemplateWorkspaceIndex {
       item.sortText = `${symbol.kind === 'namespace' ? '0' : '1'}_${symbol.name.toLowerCase()}`;
       return item;
     });
+  }
+
+  async signatureHelp(document, position) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const offset = document.offsetAt(position);
+    const beforeCursor = record.source.slice(0, offset);
+    const context = this.functionCallContext(record, beforeCursor, true);
+    if (!context) return undefined;
+
+    const { declaration, argumentIndex } = context;
+    const parameters = declaration.symbol.parameters || [];
+    const paramInfos = parameters.map(({ name, defaultValue }) => {
+      const label = defaultValue !== undefined ? `${name}=${defaultValue}` : name;
+      const doc = defaultValue !== undefined
+        ? new vscode.MarkdownString(`Default: \`${defaultValue}\``)
+        : new vscode.MarkdownString('*(Required)*');
+      return new vscode.ParameterInformation(label, doc);
+    });
+
+    const paramLabels = paramInfos.map((p) => p.label).join(', ');
+    const signatureLabel = `${declaration.symbol.name}(${paramLabels})`;
+    const signature = new vscode.SignatureInformation(
+      signatureLabel,
+      declaration.symbol.documentation ? new vscode.MarkdownString(declaration.symbol.documentation) : undefined
+    );
+    signature.parameters = paramInfos;
+
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    help.activeParameter = parameters.length > 0 ? argumentIndex : 0;
+    return help;
   }
 
   isInterpolationContext(source, offset) {
@@ -524,16 +569,7 @@ class TemplateWorkspaceIndex {
     );
     if (declaredCallable) {
       const references = await this.references(document, position);
-      if (references.length) {
-        await vscode.commands.executeCommand(
-          'editor.action.peekLocations',
-          document.uri,
-          position,
-          references,
-          'peek'
-        );
-      }
-      return undefined;
+      return references.length ? references : undefined;
     }
 
     for (const directive of record.directives) {
@@ -706,11 +742,13 @@ class TemplateWorkspaceIndex {
 
     const location = await this.definition(document, position);
     if (!location) return undefined;
-    const targetRecord = this.records.get(this.key(location.uri));
+    const targetLocation = Array.isArray(location) ? location[0] : location;
+    if (!targetLocation) return undefined;
+    const targetRecord = this.records.get(this.key(targetLocation.uri));
     if (!targetRecord) return undefined;
 
-    const targetDocument = await vscode.workspace.openTextDocument(location.uri);
-    const targetOffset = targetDocument.offsetAt(location.range.start);
+    const targetDocument = await vscode.workspace.openTextDocument(targetLocation.uri);
+    const targetOffset = targetDocument.offsetAt(targetLocation.range.start);
     const symbol = targetRecord.symbols.find((item) => item.offset === targetOffset);
     return symbol ? { record: targetRecord, symbol } : undefined;
   }
@@ -788,6 +826,80 @@ class TemplateWorkspaceIndex {
     }
 
     return results;
+  }
+
+  async prepareRename(document, position) {
+    await this.ready;
+    const target = await this.symbolAt(document, position);
+    if (!target) return undefined;
+
+    const record = this.currentRecord(document);
+    let wordName;
+    let range;
+
+    if (typeof document.getWordRangeAtPosition === 'function') {
+      const wordRange = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+      if (wordRange) {
+        range = wordRange;
+        wordName = document.getText(wordRange);
+      }
+    }
+
+    if (!range) {
+      const offset = document.offsetAt(position);
+      const words = /[A-Za-z_][A-Za-z0-9_]*/g;
+      let match;
+      while ((match = words.exec(record.source)) !== null) {
+        if (offset >= match.index && offset <= match.index + match[0].length) {
+          wordName = match[0];
+          range = new vscode.Range(
+            document.positionAt(match.index),
+            document.positionAt(match.index + match[0].length)
+          );
+          break;
+        }
+      }
+    }
+
+    if (!range || !wordName) return undefined;
+
+    const leafName = target.symbol.name.split('.').pop();
+    if (wordName !== leafName) return undefined;
+
+    return { range, placeholder: leafName };
+  }
+
+  async rename(document, position, newName) {
+    if (!newName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) {
+      throw new Error(`'${newName}' is not a valid FreeMarker identifier.`);
+    }
+
+    await this.ready;
+    const target = await this.symbolAt(document, position);
+    if (!target) return undefined;
+
+    const references = await this.references(document, position);
+    const edit = new vscode.WorkspaceEdit();
+    const seen = new Set();
+    const addEdit = (targetUri, range) => {
+      const key = `${targetUri.toString()}:${range.start.line}:${range.start.character}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edit.replace(targetUri, range, newName);
+    };
+
+    const declDocument = await vscode.workspace.openTextDocument(target.record.uri);
+    const declRange = new vscode.Range(
+      declDocument.positionAt(target.symbol.offset),
+      declDocument.positionAt(target.symbol.offset + target.symbol.length)
+    );
+    addEdit(target.record.uri, declRange);
+
+    for (const ref of references) {
+      addEdit(ref.uri, ref.range);
+    }
+
+    return edit;
   }
 
   async completions(document, position) {
@@ -924,6 +1036,13 @@ function activate(context) {
     vscode.languages.registerReferenceProvider({ language: 'freemarker' }, {
       provideReferences: (document, position) => index.references(document, position)
     }),
+    vscode.languages.registerRenameProvider({ language: 'freemarker' }, {
+      prepareRename: (document, position) => index.prepareRename(document, position),
+      provideRenameEdits: (document, position, newName) => index.rename(document, position, newName)
+    }),
+    vscode.languages.registerSignatureHelpProvider({ language: 'freemarker' }, {
+      provideSignatureHelp: (document, position) => index.signatureHelp(document, position)
+    }, '(', ','),
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position) => index.completions(document, position)
     }, '.', '@', ' '),

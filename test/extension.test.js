@@ -118,8 +118,11 @@ class Document {
     this.languageId = 'freemarker';
   }
 
-  getText() {
-    return this.text;
+  getText(range) {
+    if (!range) return this.text;
+    const startOffset = this.offsetAt(range.start);
+    const endOffset = this.offsetAt(range.end);
+    return this.text.slice(startOffset, endOffset);
   }
 
   offsetAt(position) {
@@ -133,6 +136,23 @@ class Document {
     const prefix = this.text.slice(0, targetOffset);
     const lines = prefix.split('\n');
     return new Position(lines.length - 1, lines[lines.length - 1].length);
+  }
+
+  getWordRangeAtPosition(position, regex = /[A-Za-z_][A-Za-z0-9_]*/) {
+    const lines = this.text.split('\n');
+    const line = lines[position.line];
+    if (!line) return undefined;
+    let match;
+    const re = new RegExp(regex.source, 'g');
+    while ((match = re.exec(line)) !== null) {
+      if (position.character >= match.index && position.character <= match.index + match[0].length) {
+        return new Range(
+          new Position(position.line, match.index),
+          new Position(position.line, match.index + match[0].length)
+        );
+      }
+    }
+    return undefined;
   }
 }
 
@@ -154,6 +174,45 @@ const vscode = {
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
+  },
+  WorkspaceEdit: class {
+    constructor() {
+      this._edits = new Map();
+    }
+    replace(targetUri, range, newText) {
+      const key = targetUri.fsPath;
+      if (!this._edits.has(key)) this._edits.set(key, []);
+      this._edits.get(key).push({ range, newText });
+    }
+    has(targetUri) {
+      return this._edits.has(targetUri.fsPath);
+    }
+    get(targetUri) {
+      return this._edits.get(targetUri.fsPath) || [];
+    }
+    entries() {
+      return [...this._edits.entries()].map(([fsPath, edits]) => [uri(fsPath), edits]);
+    }
+  },
+  SignatureHelp: class {
+    constructor() {
+      this.signatures = [];
+      this.activeSignature = 0;
+      this.activeParameter = 0;
+    }
+  },
+  SignatureInformation: class {
+    constructor(label, documentation) {
+      this.label = label;
+      this.documentation = documentation;
+      this.parameters = [];
+    }
+  },
+  ParameterInformation: class {
+    constructor(label, documentation) {
+      this.label = label;
+      this.documentation = documentation;
+    }
   },
   CompletionItem: class {
     constructor(label, kind) {
@@ -219,6 +278,15 @@ const vscode = {
     },
     registerReferenceProvider: (_selector, provider) => {
       providers.references = provider;
+      return disposable;
+    },
+    registerRenameProvider: (_selector, provider) => {
+      providers.rename = provider;
+      return disposable;
+    },
+    registerSignatureHelpProvider: (_selector, provider, ...triggerCharacters) => {
+      providers.signatureHelp = provider;
+      providers.signatureHelpTriggerCharacters = triggerCharacters;
       return disposable;
     },
     registerCompletionItemProvider: (_selector, provider, ...triggerCharacters) => {
@@ -791,17 +859,154 @@ async function run() {
     cardsDocument,
     cardsDocument.positionAt(macroDeclarationOffset)
   );
-  assert.strictEqual(macroDeclarationNavigation, undefined);
-  assert.strictEqual(executedCommands[executedCommands.length - 1][0], 'editor.action.peekLocations');
-  assert.strictEqual(executedCommands[executedCommands.length - 1][3].length, 2);
+  assert(Array.isArray(macroDeclarationNavigation));
+  assert.strictEqual(macroDeclarationNavigation.length, 2);
 
   const functionDeclarationNavigation = await providers.definition.provideDefinition(
     cardsDocument,
     cardsDocument.positionAt(functionDeclarationOffset)
   );
-  assert.strictEqual(functionDeclarationNavigation, undefined);
-  assert.strictEqual(executedCommands[executedCommands.length - 1][0], 'editor.action.peekLocations');
-  assert.strictEqual(executedCommands[executedCommands.length - 1][3].length, 1);
+  assert(Array.isArray(functionDeclarationNavigation));
+  assert.strictEqual(functionDeclarationNavigation.length, 1);
+
+  // Rename provider tests
+  const pageTitleOffset = mainText.indexOf('pageTitle =') + 1;
+  const pageTitlePrepare = await providers.rename.prepareRename(document, positionAt(mainText, pageTitleOffset));
+  assert(pageTitlePrepare);
+  assert.strictEqual(pageTitlePrepare.placeholder, 'pageTitle');
+
+  const renderCallOffset = mainText.indexOf('<@cards.render') + '<@cards.'.length + 1;
+  const renderPrepare = await providers.rename.prepareRename(document, positionAt(mainText, renderCallOffset));
+  assert(renderPrepare);
+  assert.strictEqual(renderPrepare.placeholder, 'render');
+
+  const invalidPrepare = await providers.rename.prepareRename(document, positionAt(mainText, 0));
+  assert.strictEqual(invalidPrepare, undefined);
+
+  const pageTitleEdits = await providers.rename.provideRenameEdits(document, positionAt(mainText, pageTitleOffset), 'newTitle');
+  assert(pageTitleEdits);
+  assert(pageTitleEdits.has(mainUri));
+  assert.strictEqual(pageTitleEdits.get(mainUri).length, 2);
+  assert(pageTitleEdits.get(mainUri).every((edit) => edit.newText === 'newTitle'));
+
+  const renderEdits = await providers.rename.provideRenameEdits(cardsDocument, cardsDocument.positionAt(macroDeclarationOffset), 'displayCard');
+  assert(renderEdits);
+  assert(renderEdits.has(cardsUri));
+  assert.strictEqual(renderEdits.get(cardsUri).length, 1);
+  assert.strictEqual(renderEdits.get(cardsUri)[0].newText, 'displayCard');
+  assert(renderEdits.has(mainUri));
+  assert.strictEqual(renderEdits.get(mainUri).length, 2);
+  assert(renderEdits.get(mainUri).every((edit) => edit.newText === 'displayCard'));
+
+  const sharedUri = uri('/virtual/work/pages/shared.ftl');
+  const sharedText = files.get(sharedUri.fsPath);
+  const sharedDocument = new Document(sharedUri, sharedText);
+  const layoutOffset = sharedText.indexOf('layout') + 1;
+  const layoutEdits = await providers.rename.provideRenameEdits(sharedDocument, sharedDocument.positionAt(layoutOffset), 'pageLayout');
+  assert(layoutEdits);
+  assert.strictEqual(layoutEdits.get(sharedUri).length, 1);
+  assert.strictEqual(layoutEdits.get(mainUri).length, 3);
+  assert(layoutEdits.get(mainUri).every((edit) => edit.newText === 'pageLayout'));
+
+  await assert.rejects(
+    async () => {
+      await providers.rename.provideRenameEdits(document, positionAt(mainText, pageTitleOffset), '123invalid');
+    },
+    /not a valid FreeMarker identifier/
+  );
+  await assert.rejects(
+    async () => {
+      await providers.rename.provideRenameEdits(document, positionAt(mainText, pageTitleOffset), 'bad-name');
+    },
+    /not a valid FreeMarker identifier/
+  );
+
+  const nonExistentRename = await providers.rename.provideRenameEdits(document, positionAt(mainText, 0), 'validName');
+  assert.strictEqual(nonExistentRename, undefined);
+
+  // Rename function from call site
+  const totalOffset = mainText.indexOf('cards.total') + 'cards.'.length + 1;
+  const totalPrepare = await providers.rename.prepareRename(document, positionAt(mainText, totalOffset));
+  assert(totalPrepare);
+  assert.strictEqual(totalPrepare.placeholder, 'total');
+  const totalEdits = await providers.rename.provideRenameEdits(document, positionAt(mainText, totalOffset), 'calcSum');
+  assert(totalEdits);
+  assert.strictEqual(totalEdits.get(cardsUri).length, 1);
+  assert.strictEqual(totalEdits.get(cardsUri)[0].newText, 'calcSum');
+  assert.strictEqual(totalEdits.get(mainUri).length, 1);
+  assert.strictEqual(totalEdits.get(mainUri)[0].newText, 'calcSum');
+
+  // Rename hash member
+  const fontOffset = mainText.indexOf('editor.fontSize') + 'editor.'.length + 1;
+  const fontPrepare = await providers.rename.prepareRename(document, positionAt(mainText, fontOffset));
+  assert(fontPrepare);
+  assert.strictEqual(fontPrepare.placeholder, 'fontSize');
+  const fontEdits = await providers.rename.provideRenameEdits(document, positionAt(mainText, fontOffset), 'size');
+  assert(fontEdits);
+  assert.strictEqual(fontEdits.get(mainUri).length, 3);
+  assert(fontEdits.get(mainUri).every((edit) => edit.newText === 'size'));
+
+  // Rename prepare on closing macro tag
+  const closingLayoutOffset = mainText.indexOf('</@layout>') + '</@'.length + 1;
+  const closingLayoutPrepare = await providers.rename.prepareRename(document, positionAt(mainText, closingLayoutOffset));
+  assert(closingLayoutPrepare);
+  assert.strictEqual(closingLayoutPrepare.placeholder, 'layout');
+
+  // Signature Help provider tests
+  assert.deepStrictEqual(providers.signatureHelpTriggerCharacters, ['(', ',']);
+
+  const totalCallOffset = mainText.indexOf('cards.total(1)') + 'cards.total('.length;
+  const totalHelp = await providers.signatureHelp.provideSignatureHelp(document, positionAt(mainText, totalCallOffset));
+  assert(totalHelp);
+  assert.strictEqual(totalHelp.signatures.length, 1);
+  assert.strictEqual(totalHelp.signatures[0].label, 'total(items, precision=2, label="compact")');
+  assert.strictEqual(totalHelp.signatures[0].documentation.value, 'Calculates a total from the supplied values.');
+  assert.strictEqual(totalHelp.signatures[0].parameters.length, 3);
+  assert.strictEqual(totalHelp.signatures[0].parameters[0].label, 'items');
+  assert.strictEqual(totalHelp.signatures[0].parameters[0].documentation.value, '*(Required)*');
+  assert.strictEqual(totalHelp.signatures[0].parameters[1].label, 'precision=2');
+  assert.strictEqual(totalHelp.signatures[0].parameters[1].documentation.value, 'Default: `2`');
+  assert.strictEqual(totalHelp.signatures[0].parameters[2].label, 'label="compact"');
+  assert.strictEqual(totalHelp.signatures[0].parameters[2].documentation.value, 'Default: `"compact"`');
+  assert.strictEqual(totalHelp.activeSignature, 0);
+  assert.strictEqual(totalHelp.activeParameter, 0);
+
+  const totalSecondDoc = new Document(mainUri, `${mainText}\n\${cards.total(1, `);
+  const totalSecondHelp = await providers.signatureHelp.provideSignatureHelp(
+    totalSecondDoc,
+    totalSecondDoc.positionAt(totalSecondDoc.getText().length)
+  );
+  assert(totalSecondHelp);
+  assert.strictEqual(totalSecondHelp.activeParameter, 1);
+
+  const totalThirdDoc = new Document(mainUri, `${mainText}\n\${cards.total(1, 2, `);
+  const totalThirdHelp = await providers.signatureHelp.provideSignatureHelp(
+    totalThirdDoc,
+    totalThirdDoc.positionAt(totalThirdDoc.getText().length)
+  );
+  assert(totalThirdHelp);
+  assert.strictEqual(totalThirdHelp.activeParameter, 2);
+
+  const nestedFuncDoc = new Document(mainUri, `${mainText}\n\${toolkit.nested.funcTest("wert", `);
+  const nestedFuncHelp = await providers.signatureHelp.provideSignatureHelp(
+    nestedFuncDoc,
+    nestedFuncDoc.positionAt(nestedFuncDoc.getText().length)
+  );
+  assert(nestedFuncHelp);
+  assert.strictEqual(nestedFuncHelp.signatures[0].label, 'funcTest(wert, fallback="standard")');
+  assert.strictEqual(nestedFuncHelp.activeParameter, 1);
+
+  const hiddenFuncDoc = new Document(mainUri, `${mainText}\n\${cards._hiddenFunction(1`);
+  const hiddenFuncHelp = await providers.signatureHelp.provideSignatureHelp(
+    hiddenFuncDoc,
+    hiddenFuncDoc.positionAt(hiddenFuncDoc.getText().length)
+  );
+  assert(hiddenFuncHelp);
+  assert.strictEqual(hiddenFuncHelp.signatures[0].label, '_hiddenFunction(value)');
+  assert.strictEqual(hiddenFuncHelp.activeParameter, 0);
+
+  const outsideHelp = await providers.signatureHelp.provideSignatureHelp(document, positionAt(mainText, 0));
+  assert.strictEqual(outsideHelp, undefined);
 
   console.log('Extension integration tests passed.');
 }
