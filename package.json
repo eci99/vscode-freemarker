@@ -4,6 +4,7 @@
   "description": "FreeMarker template support with namespace completion and navigation across files.",
   "version": "0.1.0",
   "publisher": "local-dev",
+  "license": "MIT",
   "main": "./extension.js",
   "engines": {
     "vscode": "^1.85.0"
