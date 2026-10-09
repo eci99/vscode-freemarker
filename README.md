@@ -1,44 +1,100 @@
 # FreeMarker IntelliSense
 
-VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`). The built-ins, directives, special variables, and literals follow FreeMarker 2.3.35.
+Completion, navigation, validation, and formatting for [Apache FreeMarker](https://freemarker.apache.org/) templates (`.ftl`, `.ftlh`, and `.ftlx`) in VS Code.
 
-## Template features
+The extension indexes the templates in your workspace and follows `<#import>` and `<#include>`, so macros, functions, and variables are known across files. Built-ins, directives, special variables, and literals follow FreeMarker 2.3.35.
 
-- Syntax highlighting for directives, interpolations, comments, and expressions
-- Template validation for unclosed, unexpected, and mismatched FreeMarker block tags, for branch tags such as `<#else>` or `<#case>` outside their parent directive, and for unknown built-ins with a suggestion for likely typos
-- Warnings based on the workspace index: `import`/`include` paths that cannot be found, names that are not defined in an imported namespace, and macro calls that leave out required parameters
-- Document formatting for nested FreeMarker blocks and paired user directives, with `@formatter:off` / `@formatter:on` comment markers to preserve selected regions
-- Completion of macros, functions, variables, and nested aliases across imported and included templates
-- Variable completion labels include known assigned values
-- Interpolation completion (`${...}` and `#{...}`) is limited to namespaces, variables, and functions
-- Macro and function completion details include declared parameters and default values
-- The first paragraph of an immediately preceding FreeMarker comment is included in macro/function completion documentation
-- Named macro-call arguments are suggested as `name=` and already supplied arguments are omitted
-- Function arguments suggest in-scope variables and namespaces without snippets; documentation lists the full signature, highlights the current parameter, and substitutes values already entered at the call site
-- Go to Definition for imported namespace members, simple and capture-assigned variables, loop variables, nested hash fields, and included templates; Go to Definition on a macro or function declaration navigates directly to its call sites
-- Hover documentation for namespace aliases, variables, macros, and functions
-- Built-in completion after `?` in FreeMarker expressions, with hover documentation and highlighting for snake case and camel case names; deprecated built-ins are marked, and built-ins that fit the type of a literal, an assigned variable, or a loop variable are listed first
-- Directive completion after `<#` and hover documentation for directives; `</#` and `</@` suggest the blocks that are still open, innermost first
-- Completion, hover documentation, and highlighting for special variables such as `.now` or `.current_template_name`
-- Clickable `import`/`include` paths, workspace symbol search for macros, functions, and variables, folding for FreeMarker blocks and comments, and highlighting of the tags that belong to the block under the cursor
-- The first paragraph of a comment immediately before or inline after a variable declaration is included in its hover
-- Signature Help for function calls with parameter details, default values, documentation, and active parameter highlighting
-- Signature Help for built-ins that take arguments, such as `?replace(from, to, flags?)`
-- Find All References for variables and macros/functions across namespace imports and includes
-- Rename Symbol for variables, macros, and functions across templates, updating declarations and all references
-- Workspace indexing that updates as template files are opened, edited, created, or deleted
-- Optional `freemarker.templateRoots` workspace setting for template-loader roots
-- `freemarker.validateTemplatePaths` (default: on) turns the warning for unresolved `import`/`include` paths off, for projects that load templates from outside the workspace
-- Private definitions and namespace aliases use the configurable `freemarker.privatePrefix` setting (default: `_`)
+## Features
 
-For example, with `<#import "lib/toolkit.ftl" as toolkit>`, if that template imports `nested.ftl` as `nested` and includes `shared.ftl`, then `toolkit.nested.` offers nested-template declarations and `toolkit.` offers declarations from the included template plus the `nested` alias. Go to Definition resolves paths such as `toolkit.nested.render` across these template levels. Local variables declared by `#assign`, `#local`, `#global`, and `#list ... as ...` are also navigable from their references.
+### Completion
 
-Names beginning with the private prefix are hidden from external namespace completion and definition lookup, but remain available inside their defining template. The index resolves statically written import/include paths. It does not infer Java methods exposed through the FreeMarker data model.
+- **Macros, functions, and variables** from the current template and from everything it imports or includes. `toolkit.` lists the members of the imported namespace, and `toolkit.nested.` those of a namespace imported there.
+- **Macro arguments**: inside `<@card ...>` the parameters are offered as `name=`, with their default values. Parameters that are already set are left out.
+- **Function arguments**: variables and namespaces in scope, with the full signature and the current parameter in the documentation.
+- **Built-ins** after `?`, with parameters and a short description. Built-ins that fit the expression are listed first, for example string built-ins after a variable that was assigned a string, or `index` and `has_next` after a loop variable.
+- **Directives** after `<#`, with their syntax.
+- **End tags**: `</#` and `</@` offer the blocks that are still open, innermost first.
+- **Special variables** after a leading `.`, such as `.now` or `.current_template_name`.
+- **Snippets** for common constructs: `if`, `ife`, `elif`, `else`, `list`, `assign`, `local`, `macro`, `import`, `include`, `interp`, and `ftlcomment`.
 
-## Run in VS Code
+Completion labels show what is known about a symbol: the value assigned to a variable, or the parameters and defaults of a macro or function.
 
-Open this folder in VS Code and press `F5` to launch an Extension Development Host. Open a FreeMarker template there to try the language support.
+### Navigation
 
-## Tests and packaging
+- **Go to Definition** for macros, functions, namespace members, variables (including capture assignments, loop variables, and fields of hash literals), namespace aliases, and `import`/`include` paths. On a macro or function declaration it lists the call sites instead.
+- **Find All References** and **Rename Symbol** for variables, macros, and functions, across all templates that import or include them.
+- **Clickable paths** in `<#import>` and `<#include>`.
+- **Outline** with imports and includes, variables, functions, and macros.
+- **Workspace symbol search** (`Ctrl+T`) for macros, functions, and variables in all templates.
 
-Run the parser tests with `node ./test/template-index.test.js`. The built-in list lives in `builtins.js`, and the directives and special variables in `directives.js`; `node ./test/builtins.test.js` and `node ./test/directives.test.js` fail if the highlighting patterns in `syntaxes/freemarker.tmLanguage.json` no longer match them. Package the extension with `npx @vscode/vsce package` in an environment with a supported Node.js/npm version.
+### Hover and Signature Help
+
+- **Hover** for variables, macros, functions, and namespace aliases shows the declaration, the assigned value or the parameters, and the source template. Built-ins, directives, and special variables show their description and syntax.
+- **Signature Help** for function calls and for built-ins that take arguments, such as `?replace(from, to, flags?)`, with the active parameter highlighted.
+- **Documentation comments**: the first paragraph of a `<#-- ... -->` comment directly before a macro or function is shown in completion, hover, and Signature Help. For a variable it is shown in the hover, and a comment on the same line after the declaration works too.
+
+### Diagnostics
+
+Reported as errors:
+
+- Unclosed, unexpected, and mismatched block tags, for directives and for `<@...>` calls
+- `<#else>`, `<#elseif>`, `<#case>`, `<#default>`, `<#on>`, and `<#recover>` outside the directive they belong to
+- Unknown built-ins, with a suggestion for likely typos: `?uper_case` → `?upper_case`
+
+Reported as warnings, based on the workspace index:
+
+- `import`/`include` paths that cannot be found
+- Names that are not defined in an imported namespace, such as `<@cards.rendr />`
+- Macro calls that leave out a required parameter
+
+### Formatting and editing
+
+- **Format Document** indents nested FreeMarker blocks and paired `<@...>` calls. Regions between `<#-- @formatter:off -->` and `<#-- @formatter:on -->` are left as they are.
+- **Folding** for FreeMarker blocks and comments. The parts before and after `<#else>` fold separately.
+- **Matching tags**: with the cursor on a tag, the start tag, the end tag, and branch tags such as `<#else>` of the same block are highlighted.
+- **Syntax highlighting** for directives, interpolations, comments, expressions, built-ins, and special variables, on top of HTML.
+
+## How templates are connected
+
+```ftl
+<#import "lib/toolkit.ftl" as toolkit>
+<#include "shared.ftl">
+
+<@toolkit.card title=pageTitle />
+${toolkit.nested.label}
+```
+
+- Everything declared in an included template is available as if it were declared in the including template.
+- An imported template is available under its alias. If `toolkit.ftl` imports another template as `nested`, its members are reachable as `toolkit.nested.…`.
+- Template paths are resolved relative to the current template, then relative to the workspace folders, then relative to the folders in `freemarker.templateRoots`.
+- Names that start with the private prefix (`_` by default) are hidden from completion and navigation outside the template that defines them.
+
+## Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `freemarker.templateRoots` | `[]` | Workspace-relative folders that are searched when resolving template paths, matching the roots of your template loader. |
+| `freemarker.validateTemplatePaths` | `true` | Warn about `import`/`include` paths that cannot be found. Turn this off if templates are loaded from outside the workspace, for example from a JAR. |
+| `freemarker.privatePrefix` | `_` | Prefix that marks macros, functions, variables, and namespace aliases as private to their template. |
+
+## Limitations
+
+- Only the angle bracket syntax (`<#if>`, `${...}`) is supported, not the square bracket syntax (`[#if]`, `[=...]`).
+- Only `import`/`include` paths written as plain string literals are followed. Paths that are computed at runtime are ignored.
+- Objects and methods that come from the Java data model are not known to the extension, so there is no completion or validation for them.
+- Types are only inferred from literals, assignments of literals, and loop variables. Everything else gets the full, alphabetical list of built-ins.
+- Interpolations inside string literals, such as `"${name?trim}"`, are not checked for unknown built-ins.
+
+## Development
+
+Open the folder in VS Code and press `F5` to start an Extension Development Host with the extension loaded.
+
+Run the tests with `npm test`. They need no VS Code installation.
+
+The lists of built-ins, directives, and special variables live in `builtins.js` and `directives.js`. The highlighting patterns in `syntaxes/freemarker.tmLanguage.json` are generated from them (`builtinGrammarPattern()` and `specialVariableGrammarPattern()`), and the tests fail if the two no longer match.
+
+Build the package with `npx @vscode/vsce package`.
+
+## License
+
+[MIT](LICENSE)
