@@ -1,7 +1,7 @@
 {
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker IntelliSense",
-  "description": "FreeMarker template support with namespace completion and navigation across files.",
+  "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
   "version": "0.1.0",
   "publisher": "local-dev",
   "license": "MIT",
