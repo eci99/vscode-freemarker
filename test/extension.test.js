@@ -15,6 +15,10 @@ const files = new Map([
     '${settings.editor.fontSize}',
     '${settings.editor.fontSize}',
     '${cards.total}',
+    '${cards.total(1)}',
+    '<@cards._hidden />',
+    '${cards._hiddenFunction(1)}',
+    '${cards._internal}',
     '<#list products as product>${product}</#list>',
     '<@cards.render>card</@cards.render>',
     '${cards.salutation}',
@@ -32,6 +36,7 @@ const files = new Map([
     '<#-- Renders a card with configurable styling.\n\nInternal implementation note. -->',
     '<#macro render title className="button"><#local macroOnly = "hidden"><#import "nested.ftl" as hiddenNamespace>card</#macro>',
     '<#macro _hidden>secret</#macro>',
+    '<#function _hiddenFunction value>value</#function>',
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
     '<#-- Calculates a total from the supplied values. -->',
@@ -122,6 +127,7 @@ class Document {
 
 const providers = {};
 const diagnosticEntries = new Map();
+const executedCommands = [];
 let onDidOpenDocument;
 let onDidChangeDocument;
 const disposable = { dispose() {} };
@@ -151,6 +157,9 @@ const vscode = {
     constructor(value) {
       this.value = value;
     }
+  },
+  commands: {
+    executeCommand: async (...args) => executedCommands.push(args)
   },
   workspace: {
     workspaceFolders: [{ uri: uri('/virtual/work') }],
@@ -581,19 +590,42 @@ async function run() {
   assert(toolkitCompletions.some((item) => item.label === 'nested'));
   assert(!toolkitCompletions.some((item) => item.label === '_privateNested'));
 
-  const privateDefinitionOffset = mainText.indexOf('cards._hidden') + 'cards.'.length + 1;
+  const privateDefinitionOffset = mainText.indexOf('<@cards._hidden') + '<@cards.'.length + 1;
   const privateDefinition = await providers.definition.provideDefinition(
     document,
     positionAt(mainText, privateDefinitionOffset)
   );
-  assert.strictEqual(privateDefinition, undefined);
+  assert.strictEqual(privateDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
+  assert.strictEqual(privateDefinition.range.start.line, positionAt(
+    files.get('/virtual/work/lib/cards.ftl'),
+    files.get('/virtual/work/lib/cards.ftl').indexOf('<#macro _hidden')
+  ).line);
+
+  const privateFunctionDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, mainText.indexOf('cards._hiddenFunction') + 'cards.'.length + 1)
+  );
+  assert.strictEqual(privateFunctionDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
+
+  const privateVariableDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, mainText.indexOf('cards._internal') + 'cards.'.length + 1)
+  );
+  assert.strictEqual(privateVariableDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
 
   const privateNestedOffset = mainText.indexOf('toolkit._privateNested.render') + 'toolkit.'.length + 2;
   const privateNestedDefinition = await providers.definition.provideDefinition(
     document,
     positionAt(mainText, privateNestedOffset)
   );
-  assert.strictEqual(privateNestedDefinition, undefined);
+  assert.strictEqual(privateNestedDefinition.uri.fsPath, '/virtual/work/lib/nested.ftl');
+
+  const privateNestedMemberOffset = mainText.indexOf('toolkit._privateNested.render') + 'toolkit._privateNested.'.length + 1;
+  const privateNestedMemberDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, privateNestedMemberOffset)
+  );
+  assert.strictEqual(privateNestedMemberDefinition.uri.fsPath, '/virtual/work/lib/nested.ftl');
 
   const cardsUri = uri('/virtual/work/lib/cards.ftl');
   const cardsText = files.get(cardsUri.fsPath);
@@ -646,6 +678,80 @@ async function run() {
     { includeDeclaration: true }
   );
   assert.strictEqual(renderReferences.length, 2);
+
+  const functionDeclarationOffset = cardsText.indexOf('total items') + 1;
+  const functionReferences = await providers.references.provideReferences(
+    cardsDocument,
+    cardsDocument.positionAt(functionDeclarationOffset),
+    { includeDeclaration: true }
+  );
+  assert.strictEqual(functionReferences.length, 1);
+  assert.strictEqual(functionReferences[0].uri.fsPath, mainUri.fsPath);
+  assert.strictEqual(
+    functionReferences[0].range.start.character,
+    positionAt(mainText, mainText.indexOf('cards.total(1)') + 'cards.'.length).character
+  );
+  const functionCallReferences = await providers.references.provideReferences(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.total(1)') + 'cards.total('.length - 1),
+    { includeDeclaration: true }
+  );
+  assert.strictEqual(functionCallReferences.length, 1);
+
+  const hiddenMacroOffset = cardsText.indexOf('<#macro _hidden') + '<#macro '.length + 1;
+  const hiddenMacroReferences = await providers.references.provideReferences(
+    cardsDocument,
+    cardsDocument.positionAt(hiddenMacroOffset),
+    { includeDeclaration: false }
+  );
+  assert.strictEqual(hiddenMacroReferences.length, 1);
+  assert.strictEqual(hiddenMacroReferences[0].uri.fsPath, mainUri.fsPath);
+
+  const hiddenFunctionOffset = cardsText.indexOf('_hiddenFunction value') + 1;
+  const hiddenFunctionReferences = await providers.references.provideReferences(
+    cardsDocument,
+    cardsDocument.positionAt(hiddenFunctionOffset),
+    { includeDeclaration: false }
+  );
+  assert.strictEqual(hiddenFunctionReferences.length, 1);
+  assert.strictEqual(hiddenFunctionReferences[0].uri.fsPath, mainUri.fsPath);
+
+  const hiddenVariableOffset = cardsText.indexOf('_internal =') + 1;
+  const hiddenVariableReferences = await providers.references.provideReferences(
+    cardsDocument,
+    cardsDocument.positionAt(hiddenVariableOffset),
+    { includeDeclaration: false }
+  );
+  assert.strictEqual(hiddenVariableReferences.length, 1);
+  assert.strictEqual(hiddenVariableReferences[0].uri.fsPath, mainUri.fsPath);
+
+  const nestedUri = uri('/virtual/work/lib/nested.ftl');
+  const nestedText = files.get(nestedUri.fsPath);
+  const nestedDocument = new Document(nestedUri, nestedText);
+  const nestedMacroOffset = nestedText.indexOf('<#macro render>') + '<#macro '.length + 1;
+  const nestedMacroReferences = await providers.references.provideReferences(
+    nestedDocument,
+    nestedDocument.positionAt(nestedMacroOffset),
+    { includeDeclaration: false }
+  );
+  assert.strictEqual(nestedMacroReferences.length, 2);
+
+  const macroDeclarationOffset = cardsText.indexOf('<#macro render') + '<#macro '.length + 1;
+  const macroDeclarationNavigation = await providers.definition.provideDefinition(
+    cardsDocument,
+    cardsDocument.positionAt(macroDeclarationOffset)
+  );
+  assert.strictEqual(macroDeclarationNavigation, undefined);
+  assert.strictEqual(executedCommands[executedCommands.length - 1][0], 'editor.action.peekLocations');
+  assert.strictEqual(executedCommands[executedCommands.length - 1][3].length, 2);
+
+  const functionDeclarationNavigation = await providers.definition.provideDefinition(
+    cardsDocument,
+    cardsDocument.positionAt(functionDeclarationOffset)
+  );
+  assert.strictEqual(functionDeclarationNavigation, undefined);
+  assert.strictEqual(executedCommands[executedCommands.length - 1][0], 'editor.action.peekLocations');
+  assert.strictEqual(executedCommands[executedCommands.length - 1][3].length, 1);
 
   console.log('Extension integration tests passed.');
 }

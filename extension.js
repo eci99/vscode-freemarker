@@ -111,11 +111,11 @@ class TemplateWorkspaceIndex {
     return undefined;
   }
 
-  resolveNamespaceRecord(record, aliases) {
+  resolveNamespaceRecord(record, aliases, includePrivate = false) {
     let current = record;
     for (let index = 0; index < aliases.length; index += 1) {
       const alias = aliases[index];
-      if (index > 0 && this.isPrivateName(alias)) return undefined;
+      if (!includePrivate && index > 0 && this.isPrivateName(alias)) return undefined;
       current = this.importedRecord(current, alias);
       if (!current) return undefined;
     }
@@ -127,17 +127,17 @@ class TemplateWorkspaceIndex {
     return typeof prefix === 'string' && prefix.length > 0 && name.startsWith(prefix);
   }
 
-  resolveNamespaceMember(record, segments) {
+  resolveNamespaceMember(record, segments, includePrivate = false) {
     if (segments.length < 2) return undefined;
     const localPath = segments.join('.');
     const localMember = this.includedSymbols(record)
       .find(({ symbol }) => symbol.kind === 'variable' && symbol.name === localPath);
     if (localMember) return localMember;
 
-    const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1));
+    const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1), includePrivate);
     if (!namespace) return undefined;
     const member = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === segments[segments.length - 1]);
-    return member && !this.isPrivateName(member.symbol.name) ? member : undefined;
+    return member && (includePrivate || !this.isPrivateName(member.symbol.name)) ? member : undefined;
   }
 
   nestedVariableDeclarations(record, pathPrefix) {
@@ -434,6 +434,24 @@ class TemplateWorkspaceIndex {
     await this.ready;
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
+    const declaredCallable = record.symbols.find((symbol) =>
+      (symbol.kind === 'macro' || symbol.kind === 'function')
+      && offset >= symbol.offset
+      && offset <= symbol.offset + symbol.length
+    );
+    if (declaredCallable) {
+      const references = await this.references(document, position);
+      if (references.length) {
+        await vscode.commands.executeCommand(
+          'editor.action.peekLocations',
+          document.uri,
+          position,
+          references,
+          'peek'
+        );
+      }
+      return undefined;
+    }
 
     for (const directive of record.directives) {
       if (offset >= directive.pathOffset && offset <= directive.pathOffset + directive.pathLength) {
@@ -454,7 +472,7 @@ class TemplateWorkspaceIndex {
       for (let index = 0; index < segments.length - 1; index += 1) {
         const segmentEnd = segmentStart + segments[index].length;
         if (offset >= segmentStart && offset <= segmentEnd) {
-          const namespace = this.resolveNamespaceRecord(record, segments.slice(0, index + 1));
+          const namespace = this.resolveNamespaceRecord(record, segments.slice(0, index + 1), true);
           if (namespace) return new vscode.Location(namespace.uri, new vscode.Position(0, 0));
         }
         segmentStart = segmentEnd + 1;
@@ -466,7 +484,7 @@ class TemplateWorkspaceIndex {
       const localDeclaration = this.includedSymbols(record)
         .find(({ symbol }) => symbol.kind === 'variable' && symbol.name === localPath);
       if (localDeclaration) return this.definitionLocation(localDeclaration.record, localDeclaration.symbol);
-      const declaration = this.resolveNamespaceMember(record, segments);
+      const declaration = this.resolveNamespaceMember(record, segments, true);
       if (declaration) return this.definitionLocation(declaration.record, declaration.symbol);
     }
 
@@ -654,9 +672,12 @@ class TemplateWorkspaceIndex {
         const segments = `${match[1]}${match[2]}`.split('.');
         const fullPath = segments.join('.');
         if (match[2] !== target.symbol.name && fullPath !== target.symbol.name) continue;
-        const member = this.resolveNamespaceMember(record, segments);
+        const member = this.resolveNamespaceMember(record, segments, true);
         if (!member) continue;
         if (member.symbol.offset !== targetOffset || this.key(member.record.uri) !== targetKey) continue;
+        const invocationEnd = match.index + match[0].length;
+        if (member.symbol.kind === 'macro' && !this.isMacroInvocation(record.source, match.index)) continue;
+        if (member.symbol.kind === 'function' && !/^\s*\(/.test(record.source.slice(invocationEnd))) continue;
         const memberOffset = match.index + match[0].lastIndexOf(match[2]);
         await addLocation(record, memberOffset, match[2].length);
       }
