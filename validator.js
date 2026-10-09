@@ -1,6 +1,7 @@
 const { findBuiltin, suggestBuiltin } = require('./builtins');
 
 const { BRANCH_PARENTS, findDirective } = require('./directives');
+const { normalizeTemplate } = require('./syntax');
 
 function withoutComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '));
@@ -76,14 +77,17 @@ function validateBuiltins(source, blocks) {
 }
 
 function tagLabel(tag, closing = false) {
-  return `<${closing ? '/' : ''}${tag.kind === 'directive' ? '#' : '@'}${tag.name}>`;
+  const label = `${closing ? '/' : ''}${tag.kind === 'directive' ? '#' : '@'}${tag.name}`;
+  return tag.square ? `[${label}]` : `<${label}>`;
 }
 
 // Pairs the start and end tags of a template. `blocks` are the closed pairs with the
 // branch tags (such as <#else>) that belong to them, and `unclosed` are the blocks
 // that are still open at the end of the text, outermost first.
-function templateBlocks(text) {
-  const source = withoutComments(text);
+function templateBlocks(text, options) {
+  const normalized = normalizeTemplate(text, options);
+  const square = normalized.tagSyntax === 'square';
+  const source = withoutComments(normalized.text);
   const stack = [];
   const blocks = [];
   const diagnostics = [];
@@ -114,7 +118,8 @@ function templateBlocks(text) {
       kind: isDirective ? 'directive' : 'macro',
       offset: match.index,
       length: end + 1 - match.index,
-      nameLength: match[0].length
+      nameLength: match[0].length,
+      square
     };
 
     if (closing) {
@@ -145,7 +150,7 @@ function templateBlocks(text) {
           parent.branches.push(tag);
         } else {
           diagnostics.push({
-            message: `${tagLabel(tag)} must be directly inside ${parents.map((parentName) => `<#${parentName}>`).join(' or ')}.`,
+            message: `${tagLabel(tag)} must be directly inside ${parents.map((parentName) => tagLabel({ ...tag, name: parentName })).join(' or ')}.`,
             offset: tag.offset,
             length: tag.length
           });
@@ -185,8 +190,8 @@ function templateBlocks(text) {
   return { source, blocks, unclosed: stack, diagnostics };
 }
 
-function validateTemplate(text) {
-  const { source, blocks, diagnostics } = templateBlocks(text);
+function validateTemplate(text, options) {
+  const { source, blocks, diagnostics } = templateBlocks(text, options);
   return [...diagnostics, ...validateBuiltins(source, blocks)];
 }
 

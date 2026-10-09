@@ -157,6 +157,7 @@ class Document {
 }
 
 const providers = {};
+const settings = {};
 const diagnosticEntries = new Map();
 const executedCommands = [];
 let onDidOpenDocument;
@@ -268,7 +269,8 @@ const vscode = {
     fs: {
       readFile: async (targetUri) => Buffer.from(files.get(targetUri.fsPath))
     },
-    getConfiguration: () => ({ get: (_key, fallback) => fallback }),
+    getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
+    onDidChangeConfiguration: () => disposable,
     openTextDocument: async (targetUri) => new Document(targetUri, files.get(targetUri.fsPath)),
     onDidChangeTextDocument: (listener) => {
       onDidChangeDocument = listener;
@@ -1264,6 +1266,92 @@ async function run() {
   assert.deepStrictEqual(highlightedTags(new Position(8, 4)), ['<#if', '<#else', '</#if']);
   assert.deepStrictEqual(highlightedTags(new Position(6, 3)), ['<#list', '</#list']);
   assert.deepStrictEqual(highlightedTags(new Position(5, 8)), []);
+
+  // Square bracket syntax
+  const squareUri = uri('/virtual/work/pages/square.ftl');
+  const squareHeader = '[#import "../lib/cards.ftl" as cards]\n[#-- The page title. --]\n[#assign pageTitle = "Home"]\n[#macro box label size=1][/#macro]\n';
+  const squareCompletionsAt = (text) => {
+    const squareDocument = new Document(squareUri, squareHeader + text);
+    return providers.completion.provideCompletionItems(squareDocument, squareDocument.positionAt(squareHeader.length + text.length));
+  };
+  assert((await squareCompletionsAt('[@cards.')).some((item) => item.insertText === 'render'));
+  assert((await squareCompletionsAt('${cards.')).some((item) => item.insertText === 'total'));
+  assert((await squareCompletionsAt('[@box ')).some((item) => item.insertText === 'label='));
+  assert.deepStrictEqual((await squareCompletionsAt('[@box label="a" ')).map((item) => item.insertText), ['size=']);
+  assert((await squareCompletionsAt('[#if pageTitle?')).some((item) => item.insertText === 'upper_case' && item.sortText.startsWith('0_')));
+  const squareDirectives = await squareCompletionsAt('[#');
+  assert.strictEqual(squareDirectives.find((item) => item.label === 'list').detail, '[#list sequence as item]...[#else]...[/#list]');
+  assert(squareDirectives.find((item) => item.label === 'assign').documentation.value.includes('`[/#assign]`'));
+  assert.deepStrictEqual(
+    (await squareCompletionsAt('[#if a > 1][#list xs as x][@box][/@box][/#')).map((item) => [item.insertText, item.detail]),
+    [['list]', 'Close [#list]'], ['if]', 'Close [#if]']]
+  );
+  assert.deepStrictEqual((await squareCompletionsAt('[#if a][@cards.render][/@')).map((item) => item.insertText), ['cards.render]']);
+  const squareSnippets = await squareCompletionsAt('if');
+  assert.strictEqual(
+    squareSnippets.find((item) => item.label === 'If block').insertText.value,
+    '[#if ${1:condition}]\n\t$0\n[/#if]'
+  );
+  assert.strictEqual((await squareCompletionsAt('ftlc')).find((item) => item.label === 'FreeMarker comment').insertText.value, '[#--\n\t$0\n--]');
+  assert.strictEqual((await squareCompletionsAt('interp')).find((item) => item.label === 'Interpolation').insertText.value, '${${1:expression}}$0');
+
+  const squareText = `${squareHeader}[#if pageTitle?has_content]\n[@cards.render title=pageTitle /]\n[@box label=pageTitle]x[/@box]\n[#else]\n${'${pageTitle}'}\n[/#if]\n[@cards.render /]\n[#case 1]`;
+  const squareDocument = new Document(squareUri, squareText);
+  files.set(squareUri.fsPath, squareText);
+  const squarePosition = (needle, shift = 1) => squareDocument.positionAt(squareText.indexOf(needle) + shift);
+  const squareHover = async (needle, shift) => (await providers.hover.provideHover(squareDocument, squarePosition(needle, shift))).contents[0].value;
+  assert((await squareHover('pageTitle?')).includes('[#assign pageTitle = "Home"]'));
+  assert((await squareHover('pageTitle?')).includes('The page title.'));
+  assert((await squareHover('box label=')).includes('[#macro box label size=1]'));
+  assert((await squareHover('[#if pageTitle', 3)).includes('[#if condition]...[#elseif condition]...[#else]...[/#if]'));
+  assert((await squareHover('has_content')).includes('**built-in has_content**'));
+  const squareDefinition = await providers.definition.provideDefinition(squareDocument, squarePosition('render title'));
+  assert.strictEqual(squareDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
+  const squareReferences = await providers.references.provideReferences(squareDocument, squarePosition('pageTitle?'));
+  assert.deepStrictEqual(squareReferences.map((reference) => reference.range.start.line), [4, 5, 6, 8]);
+  const squareOutline = await providers.documentSymbols.provideDocumentSymbols(squareDocument);
+  assert.deepStrictEqual(squareOutline.map((group) => group.children.map((symbol) => symbol.name)), [['cards'], ['pageTitle'], ['box']]);
+  assert.deepStrictEqual(squareOutline[1].children[0].range.start, new Position(2, 0));
+  assert.strictEqual((await providers.documentLinks.provideDocumentLinks(squareDocument))[0].target.fsPath, '/virtual/work/lib/cards.ftl');
+
+  onDidOpenDocument(squareDocument);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(diagnosticEntries.get(squareUri.fsPath).map((entry) => entry.message), [
+    '[#case] must be directly inside [#switch].',
+    'Missing required parameter "title" for macro "render".'
+  ]);
+  assert.deepStrictEqual(
+    providers.folding.provideFoldingRanges(squareDocument).map((range) => [range.start, range.end]),
+    [[4, 6], [7, 8]]
+  );
+  assert.deepStrictEqual(
+    providers.highlights.provideDocumentHighlights(squareDocument, squarePosition('[#else]', 2))
+      .map((highlight) => squareDocument.getText(highlight.range)),
+    ['[#if', '[#else', '[/#if']
+  );
+  const squareFormat = providers.formatting.provideDocumentFormattingEdits(
+    new Document(squareUri, '[#if ready]\n<p>Ready</p>\n[/#if]'),
+    { insertSpaces: true, tabSize: 2 }
+  );
+  assert.strictEqual(squareFormat[0].newText, '[#if ready]\n  <p>Ready</p>\n[/#if]');
+  const squareHelp = await providers.signatureHelp.provideSignatureHelp(
+    new Document(squareUri, `${squareHeader}[#if cards.total(pageTitle?length > 2, `),
+    new Position(4, 38)
+  );
+  assert.strictEqual(squareHelp.signatures[0].label, 'total(items, precision=2, label="compact")');
+  assert.strictEqual(squareHelp.activeParameter, 1);
+
+  // Square bracket interpolations are a project-wide setting.
+  settings.interpolationSyntax = 'squareBracket';
+  assert((await squareCompletionsAt('[=cards.')).some((item) => item.insertText === 'total'));
+  assert((await squareCompletionsAt('[=pageTitle?')).some((item) => item.insertText === 'upper_case'));
+  assert(!(await squareCompletionsAt('${pageTitle?')).some((item) => item.insertText === 'upper_case'));
+  assert.strictEqual((await squareCompletionsAt('interp')).find((item) => item.label === 'Interpolation').insertText.value, '[=${1:expression}]$0');
+  const interpolationDocument = new Document(squareUri, `${squareHeader}[=pageTitle?uper_case]`);
+  assert((await providers.hover.provideHover(interpolationDocument, new Position(4, 4))).contents[0].value.includes('[#assign pageTitle = "Home"]'));
+  onDidOpenDocument(interpolationDocument);
+  assert(diagnosticEntries.get(squareUri.fsPath)[0].message.includes('Did you mean ?upper_case?'));
+  delete settings.interpolationSyntax;
 
   console.log('Extension integration tests passed.');
 }

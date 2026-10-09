@@ -51,4 +51,13 @@ assert.strictEqual(formatTemplate('  <!-- @formatter:off -->\n    text\n<!-- @fo
 assert.strictEqual(formatTemplate('<#-- @formatter:off -->\n  text\n"@formatter:on"\n  more\n<#-- @formatter:on -->\ntext'),
   '<#-- @formatter:off -->\n  text\n"@formatter:on"\n  more\n<#-- @formatter:on -->\ntext');
 
+assert.strictEqual(
+  formatTemplate('[#if a > b]\n<ul>\n[#list items as item]\n<li>${item}</li>\n[/#list]\n</ul>\n[#else]\n[@box]\nnone\n[/@box]\n[/#if]', { tabSize: 2 }),
+  '[#if a > b]\n  <ul>\n  [#list items as item]\n    <li>${item}</li>\n  [/#list]\n  </ul>\n[#else]\n  [@box]\n    none\n  [/@box]\n[/#if]'
+);
+assert.strictEqual(
+  formatTemplate('[#if a]\n[#-- @formatter:off --]\n      kept\n[#-- @formatter:on --]\n[/#if]', { tabSize: 2 }),
+  '[#if a]\n[#-- @formatter:off --]\n      kept\n[#-- @formatter:on --]\n[/#if]'
+);
+
 console.log('Formatter tests passed.');

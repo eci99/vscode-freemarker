@@ -1,7 +1,17 @@
-function withoutComments(text) {
-  return text.replace(/<#--[\s\S]*?-->/g, (comment) =>
-    comment.replace(/[^\r\n]/g, ' ')
-  );
+const { normalizeTemplate } = require('./syntax');
+
+// Blanks the comments of `text`. `original` is the same template before it was rewritten
+// to the default syntax, and gets the same ranges blanked.
+function withoutComments(text, original = text) {
+  let result = '';
+  let end = 0;
+  const commentPattern = /<#--[\s\S]*?-->/g;
+  let match;
+  while ((match = commentPattern.exec(text)) !== null) {
+    result += original.slice(end, match.index) + match[0].replace(/[^\r\n]/g, ' ');
+    end = match.index + match[0].length;
+  }
+  return result + original.slice(end);
 }
 
 function leadingCommentParagraph(text, declarationOffset) {
@@ -200,14 +210,18 @@ function literalType(expression) {
 // The type of a declared variable, as far as its declaration shows it.
 function symbolType(symbol) {
   const declaration = symbol.declaration || '';
-  if (/^<#(?:list|items)\b/.test(declaration)) return 'loop variable';
+  if (/^[<[]#(?:list|items)\b/.test(declaration)) return 'loop variable';
   if (typeof symbol.value !== 'string') return undefined;
-  if (/^<#assign\s+[A-Za-z_][A-Za-z0-9_]*\s*>/.test(declaration) && !symbol.name.includes('.')) return 'string';
+  if (/^[<[]#assign\s+[A-Za-z_][A-Za-z0-9_]*\s*[>\]]/.test(declaration) && !symbol.name.includes('.')) return 'string';
   return literalType(symbol.value);
 }
 
-function parseTemplate(text) {
-  const source = withoutComments(text);
+function parseTemplate(text, options) {
+  const normalized = normalizeTemplate(text, options);
+  const source = withoutComments(normalized.text);
+  // The template as it was written, for everything that is shown to the user.
+  const display = withoutComments(normalized.text, text);
+  text = normalized.text;
   const symbols = [];
   const directives = [];
   const symbolPattern = /<#(macro|function)\s+([A-Za-z_][A-Za-z0-9_.-]*)\b/g;
@@ -216,7 +230,7 @@ function parseTemplate(text) {
   while ((match = symbolPattern.exec(source)) !== null) {
     const nameOffset = match.index + match[0].lastIndexOf(match[2]);
     const tagEnd = findTagEnd(source, symbolPattern.lastIndex);
-    const parameterSource = tagEnd < 0 ? '' : source.slice(symbolPattern.lastIndex, tagEnd);
+    const parameterSource = tagEnd < 0 ? '' : display.slice(symbolPattern.lastIndex, tagEnd);
     symbols.push({
       name: match[2],
       kind: match[1],
@@ -225,8 +239,8 @@ function parseTemplate(text) {
       parameters: splitParameters(parameterSource),
       documentation: leadingCommentParagraph(text, match.index),
       declaration: tagEnd < 0
-        ? source.slice(match.index).trim()
-        : source.slice(match.index, tagEnd + 1).trim()
+        ? display.slice(match.index).trim()
+        : display.slice(match.index, tagEnd + 1).trim()
     });
   }
 
@@ -249,13 +263,13 @@ function parseTemplate(text) {
         const closingMatch = closingTag.exec(source);
         if (closingMatch) {
           declarationEnd = closingMatch.index + closingMatch[0].length - 1;
-          value = source.slice(tagEnd + 1, closingMatch.index).trim();
+          value = display.slice(tagEnd + 1, closingMatch.index).trim();
         }
       }
       const equalsOffset = source.indexOf('=', nameOffset + match[1].length);
       const hasAssignmentValue = equalsOffset >= 0 && equalsOffset < tagEnd;
       if (!captureAssign && hasAssignmentValue) {
-        value = source.slice(equalsOffset + 1, tagEnd).replace(/\/\s*$/, '').trim();
+        value = display.slice(equalsOffset + 1, tagEnd).replace(/\/\s*$/, '').trim();
       }
       symbols.push({
         name: match[1],
@@ -266,15 +280,15 @@ function parseTemplate(text) {
         documentation: leadingCommentParagraph(text, match.index)
           || trailingCommentParagraph(text, declarationEnd + 1),
         declaration: declarationEnd < 0
-          ? source.slice(match.index).trim()
-          : source.slice(match.index, declarationEnd + 1).trim()
+          ? display.slice(match.index).trim()
+          : display.slice(match.index, declarationEnd + 1).trim()
       });
       if (hasAssignmentValue) {
-        const declaration = source.slice(match.index, tagEnd + 1).trim();
+        const declaration = display.slice(match.index, tagEnd + 1).trim();
         let hashStart = equalsOffset + 1;
         while (/\s/.test(source[hashStart] || '')) hashStart += 1;
         if (source[hashStart] === '{') {
-          parseHashMembers(source, hashStart, match[1], declaration, symbols);
+          parseHashMembers(display, hashStart, match[1], declaration, symbols);
         }
       }
     }
@@ -336,7 +350,14 @@ function parseTemplate(text) {
     directive.topLevel = !scopeRanges.some(({ start, end }) => directive.offset >= start && directive.offset < end);
   }
 
-  return { source, symbols, directives };
+  return {
+    source,
+    display,
+    tagSyntax: normalized.tagSyntax,
+    interpolationSyntax: normalized.interpolationSyntax,
+    symbols,
+    directives
+  };
 }
 
 module.exports = { findTagEnd, literalType, parseTemplate, symbolType };

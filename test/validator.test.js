@@ -83,4 +83,33 @@ assert.strictEqual(blocks[0].open.nameLength, '<#if'.length);
 assert.strictEqual(blocks[0].close.nameLength, '</#if'.length);
 assert.deepStrictEqual(unclosed.map((block) => block.name), ['list', 'box']);
 
+// Square bracket syntax
+for (const valid of [
+  '[#if a > b]${value}[#else]none[/#if]',
+  '[#list items as item][@box title=item?upper_case /][#sep], [/#list]',
+  '[#assign names = ["a", "b"]][#-- [#if open] --]',
+  '[#if a]<#if not a tag>[/#if]',
+  '[#noparse][#if open][/#noparse]'
+]) {
+  assert.deepStrictEqual(validateTemplate(valid), [], valid);
+}
+assert.deepStrictEqual(validateTemplate('[#if a]\n[/#list]').map((issue) => [issue.message, issue.offset, issue.length]), [
+  ['Closing tag [/#list] does not match the open [#if] block.', 8, 8],
+  ['Unclosed directive [#if].', 0, 7]
+]);
+assert.deepStrictEqual(validateTemplate('[#list xs as x][#elseif a][/#list]').map((issue) => issue.message), [
+  '[#elseif] must be directly inside [#if].'
+]);
+assert.deepStrictEqual(validateTemplate('[@box]${name?uper_case}').map((issue) => issue.message), [
+  'Unclosed macro [@box].',
+  'Unknown built-in ?uper_case. Did you mean ?upper_case?'
+]);
+assert.deepStrictEqual(
+  validateTemplate('<#if a>[=name?uper_case]${name?not_checked}</#if>', { interpolationSyntax: 'squareBracket' })
+    .map((issue) => [issue.message, issue.offset]),
+  [['Unknown built-in ?uper_case. Did you mean ?upper_case?', 14]]
+);
+assert.deepStrictEqual(validateTemplate('[#if a][/#if]', { tagSyntax: 'angleBracket' }), []);
+assert.deepStrictEqual(validateTemplate('<#if a>', { tagSyntax: 'squareBracket' }), []);
+
 console.log('Template validator tests passed.');

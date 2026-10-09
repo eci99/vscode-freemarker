@@ -10,10 +10,21 @@ const {
   findSpecialVariable,
   specialVariableNameStart
 } = require('./directives');
+const { displayText, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { templateBlocks, validateTemplate } = require('./validator');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
+// For text that has already been rewritten to the default syntax.
+const defaultSyntax = { tagSyntax: 'angleBracket', interpolationSyntax: 'legacy' };
+
+function syntaxOptions() {
+  const configuration = vscode.workspace.getConfiguration('freemarker');
+  return {
+    tagSyntax: configuration.get('tagSyntax', 'auto'),
+    interpolationSyntax: configuration.get('interpolationSyntax', 'legacy')
+  };
+}
 
 class TemplateWorkspaceIndex {
   constructor() {
@@ -29,7 +40,7 @@ class TemplateWorkspaceIndex {
   update(uri, text) {
     this.records.set(this.key(uri), {
       uri,
-      ...parseTemplate(text)
+      ...parseTemplate(text, syntaxOptions())
     });
   }
 
@@ -128,6 +139,11 @@ class TemplateWorkspaceIndex {
       if (!current) return undefined;
     }
     return current;
+  }
+
+  // Documentation is written with angle bracket tags.
+  tagText(record, text) {
+    return record.tagSyntax === 'square' ? toSquareBracketTags(text) : text;
   }
 
   isPrivateName(name) {
@@ -398,7 +414,7 @@ class TemplateWorkspaceIndex {
       for (const symbol of record.symbols) {
         if (symbol.topLevel === false
           || symbol.name.includes('.')
-          || /^<#(?:list|items)\b/.test(symbol.declaration || '')
+          || /^[<[]#(?:list|items)\b/.test(symbol.declaration || '')
           || !matchesQuery(symbol.name)) continue;
         const kind = symbol.kind === 'macro'
           ? vscode.SymbolKind.Method
@@ -425,7 +441,7 @@ class TemplateWorkspaceIndex {
     const lineOf = (offset) => document.positionAt(offset).line;
 
     // Each branch of a block, such as the parts before and after <#else>, folds separately.
-    for (const block of templateBlocks(text).blocks) {
+    for (const block of templateBlocks(text, syntaxOptions()).blocks) {
       const tags = [block.open, ...block.branches, block.close];
       for (let index = 0; index < tags.length - 1; index += 1) {
         ranges.push({ start: lineOf(tags[index].offset), end: lineOf(tags[index + 1].offset) - 1 });
@@ -433,8 +449,9 @@ class TemplateWorkspaceIndex {
     }
 
     const comments = /<#--[\s\S]*?-->/g;
+    const normalizedText = normalizeTemplate(text, syntaxOptions()).text;
     let match;
-    while ((match = comments.exec(text)) !== null) {
+    while ((match = comments.exec(normalizedText)) !== null) {
       ranges.push({
         start: lineOf(match.index),
         end: lineOf(match.index + match[0].length),
@@ -469,7 +486,7 @@ class TemplateWorkspaceIndex {
 
   documentHighlights(document, position) {
     const offset = document.offsetAt(position);
-    for (const block of templateBlocks(document.getText()).blocks) {
+    for (const block of templateBlocks(document.getText(), syntaxOptions()).blocks) {
       const tags = [block.open, ...block.branches, block.close];
       if (!tags.some((tag) => offset >= tag.offset && offset <= tag.offset + tag.nameLength)) continue;
       return tags.map((tag) => new vscode.DocumentHighlight(new vscode.Range(
@@ -538,31 +555,31 @@ class TemplateWorkspaceIndex {
         nesting += 1;
       } else if (character === ')' || character === ']' || character === '}') {
         if (nesting === 0) {
-          suppliedArguments.push(source.slice(argumentStart, index).trim());
+          suppliedArguments.push(displayText(source.slice(argumentStart, index)).trim());
           break;
         }
         nesting -= 1;
       } else if (character === ',' && nesting === 0) {
-        suppliedArguments.push(source.slice(argumentStart, index).trim());
+        suppliedArguments.push(displayText(source.slice(argumentStart, index)).trim());
         argumentStart = index + 1;
         argumentIndex += 1;
       }
     }
     if (argumentStart <= source.length && suppliedArguments.length === argumentIndex) {
-      suppliedArguments.push(source.slice(argumentStart).trim());
+      suppliedArguments.push(displayText(source.slice(argumentStart)).trim());
     }
 
     return { argumentIndex, suppliedArguments };
   }
 
-  builtinSignatureHelp(source) {
+  builtinSignatureHelp(record, source) {
     const opening = this.openCall(source);
     const builtin = opening === undefined ? undefined : builtinBefore(source.slice(0, opening));
     if (!builtin || builtin.parameters === undefined) return undefined;
 
     const signature = new vscode.SignatureInformation(
       `?${builtinSignature(builtin)}`,
-      new vscode.MarkdownString(builtin.description)
+      new vscode.MarkdownString(this.tagText(record, builtin.description))
     );
     let parameterStart = builtin.name.length + 2;
     signature.parameters = builtin.parameters.split(', ').map((parameter) => {
@@ -631,7 +648,7 @@ class TemplateWorkspaceIndex {
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
-    const builtinHelp = this.builtinSignatureHelp(beforeCursor);
+    const builtinHelp = this.builtinSignatureHelp(record, beforeCursor);
     if (builtinHelp) return builtinHelp;
     const context = this.functionCallContext(record, beforeCursor, true);
     if (!context) return undefined;
@@ -735,10 +752,10 @@ class TemplateWorkspaceIndex {
     const declarations = record.symbols
       .filter((symbol) => symbol.topLevel !== false
         && !symbol.name.includes('.')
-        && !/^<#(?:list|items)\b/.test(symbol.declaration || ''))
+        && !/^[<[]#(?:list|items)\b/.test(symbol.declaration || ''))
       .map((symbol) => {
         const declarationStart = symbol.declaration
-          ? record.source.lastIndexOf(symbol.declaration, symbol.offset)
+          ? record.display.lastIndexOf(symbol.declaration, symbol.offset)
           : symbol.offset;
         const rangeStart = declarationStart >= 0 ? declarationStart : symbol.offset;
         const rangeEnd = symbol.declaration
@@ -902,7 +919,7 @@ class TemplateWorkspaceIndex {
       if (!builtin) return undefined;
       const parts = [
         `**built-in ${builtin.name}**`,
-        builtin.description,
+        this.tagText(record, builtin.description),
         `\`\`\`ftl\n?${builtinSignature(builtin)}\n\`\`\``,
         `Applies to: ${builtin.category}`
       ];
@@ -917,7 +934,11 @@ class TemplateWorkspaceIndex {
     if (/<\/?#$/.test(record.source.slice(Math.max(0, selectedWord.start - 3), selectedWord.start))) {
       const directive = findDirective(selectedWord.name);
       if (!directive) return undefined;
-      const parts = [`**directive ${directive.name}**`, directive.description, `\`\`\`ftl\n${directive.syntax}\n\`\`\``];
+      const parts = [
+        `**directive ${directive.name}**`,
+        this.tagText(record, directive.description),
+        `\`\`\`ftl\n${this.tagText(record, directive.syntax)}\n\`\`\``
+      ];
       if (directive.deprecated) parts.push('Deprecated');
       return new vscode.Hover(new vscode.MarkdownString(parts.join('\n\n')), wordRange);
     }
@@ -926,7 +947,7 @@ class TemplateWorkspaceIndex {
       const variable = findSpecialVariable(selectedWord.name);
       if (!variable) return undefined;
       return new vscode.Hover(
-        new vscode.MarkdownString(`**special variable .${variable.name}**\n\n${variable.description}`),
+        new vscode.MarkdownString(`**special variable .${variable.name}**\n\n${this.tagText(record, variable.description)}`),
         wordRange
       );
     }
@@ -1214,11 +1235,11 @@ class TemplateWorkspaceIndex {
     return declaration && symbolType(declaration.symbol);
   }
 
-  builtinCompletions(targetType) {
+  builtinCompletions(record, targetType) {
     return BUILTINS.map((builtin) => {
       const item = new vscode.CompletionItem(builtinSignature(builtin), vscode.CompletionItemKind.Function);
       item.detail = `${builtin.category} built-in`;
-      item.documentation = new vscode.MarkdownString(builtin.description);
+      item.documentation = new vscode.MarkdownString(this.tagText(record, builtin.description));
       item.filterText = builtin.name;
       item.insertText = builtin.name;
       item.sortText = `${builtin.category === targetType ? 0 : 1}_${builtin.name}`;
@@ -1227,19 +1248,19 @@ class TemplateWorkspaceIndex {
     });
   }
 
-  directiveCompletions() {
+  directiveCompletions(record) {
     return DIRECTIVES.map((directive) => {
       const item = new vscode.CompletionItem(directive.name, vscode.CompletionItemKind.Keyword);
-      item.detail = directive.syntax;
-      item.documentation = new vscode.MarkdownString(directive.description);
+      item.detail = this.tagText(record, directive.syntax);
+      item.documentation = new vscode.MarkdownString(this.tagText(record, directive.description));
       if (directive.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
       return item;
     });
   }
 
   // The names that an end tag at the end of the text can close, innermost block first.
-  closingTagCompletions(textBefore, kind, tagIsClosed) {
-    return templateBlocks(textBefore).unclosed
+  closingTagCompletions(record, textBefore, kind, tagIsClosed) {
+    return templateBlocks(textBefore, defaultSyntax).unclosed
       .filter((block) => block.kind === kind && !block.optional)
       .reverse()
       .map((block, depth) => {
@@ -1247,18 +1268,18 @@ class TemplateWorkspaceIndex {
           block.name,
           kind === 'directive' ? vscode.CompletionItemKind.Keyword : vscode.CompletionItemKind.Method
         );
-        item.detail = `Close <${kind === 'directive' ? '#' : '@'}${block.name}>`;
-        item.insertText = tagIsClosed ? block.name : `${block.name}>`;
+        item.detail = this.tagText(record, `Close <${kind === 'directive' ? '#' : '@'}${block.name}>`);
+        item.insertText = tagIsClosed ? block.name : `${block.name}${record.tagSyntax === 'square' ? ']' : '>'}`;
         item.sortText = String(depth).padStart(4, '0');
         return item;
       });
   }
 
-  specialVariableCompletions() {
+  specialVariableCompletions(record) {
     return SPECIAL_VARIABLES.map((variable) => {
       const item = new vscode.CompletionItem(variable.name, vscode.CompletionItemKind.Constant);
       item.detail = 'special variable';
-      item.documentation = new vscode.MarkdownString(variable.description);
+      item.documentation = new vscode.MarkdownString(this.tagText(record, variable.description));
       return item;
     });
   }
@@ -1270,20 +1291,21 @@ class TemplateWorkspaceIndex {
     const beforeCursor = record.source.slice(0, offset);
     const builtinStart = builtinNameStart(beforeCursor);
     if (builtinStart >= 0 && this.isFreeMarkerExpression(record.source, builtinStart, offset)) {
-      return this.builtinCompletions(this.builtinTargetType(record, beforeCursor.slice(0, builtinStart - 1)));
+      return this.builtinCompletions(record, this.builtinTargetType(record, beforeCursor.slice(0, builtinStart - 1)));
     }
     const tagStart = /<(\/?)([#@])([A-Za-z_][A-Za-z0-9_.-]*)?$/.exec(beforeCursor);
     if (tagStart && tagStart[1]) {
       return this.closingTagCompletions(
+        record,
         beforeCursor.slice(0, tagStart.index),
         tagStart[2] === '#' ? 'directive' : 'macro',
-        record.source[offset] === '>'
+        record.source[offset] === '>' || (record.tagSyntax === 'square' && record.source[offset] === ']')
       );
     }
-    if (tagStart && tagStart[2] === '#') return this.directiveCompletions();
+    if (tagStart && tagStart[2] === '#') return this.directiveCompletions(record);
     const specialVariableStart = specialVariableNameStart(beforeCursor);
     if (specialVariableStart >= 0 && this.isFreeMarkerExpression(record.source, specialVariableStart, offset)) {
-      return this.specialVariableCompletions();
+      return this.specialVariableCompletions(record);
     }
     const macroArguments = this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
@@ -1312,9 +1334,12 @@ class TemplateWorkspaceIndex {
           const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Snippet);
           item.detail = snippet.description;
           item.filterText = snippet.prefix;
-          item.insertText = new vscode.SnippetString(Array.isArray(snippet.body)
-            ? snippet.body.join('\n')
-            : snippet.body);
+          const body = Array.isArray(snippet.body) ? snippet.body.join('\n') : snippet.body;
+          item.insertText = new vscode.SnippetString(
+            snippet.prefix === 'interp' && record.interpolationSyntax === 'squareBracket'
+              ? '[=${1:expression}]$0'
+              : this.tagText(record, body)
+          );
           item.sortText = `snippet_${snippet.prefix.toLowerCase()}`;
           return item;
         })
@@ -1401,7 +1426,7 @@ function activate(context) {
       if (entries.length) diagnostics.set(document.uri, entries);
       else diagnostics.delete(document.uri);
     };
-    const issues = validateTemplate(text);
+    const issues = validateTemplate(text, syntaxOptions());
     publish(issues);
     // The checks against other templates have to wait until the workspace is indexed.
     index.ready.then(() => {
@@ -1453,7 +1478,7 @@ function activate(context) {
     }),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
       provideDocumentFormattingEdits: (document, options) => {
-        const formatted = formatTemplate(document.getText(), options);
+        const formatted = formatTemplate(document.getText(), { ...options, ...syntaxOptions() });
         if (formatted === document.getText()) return [];
         return [vscode.TextEdit.replace(
           new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
@@ -1473,7 +1498,11 @@ function activate(context) {
         validateDocument(document);
       }
     }),
-    vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri))
+    vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
+    // The syntax settings change how every template is read.
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('freemarker')) index.initialize().then(validateOpenDocuments);
+    })
   );
 
   validateOpenDocuments();

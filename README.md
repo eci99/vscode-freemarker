@@ -4,6 +4,8 @@ Completion, navigation, validation, and formatting for [Apache FreeMarker](https
 
 The extension indexes the templates in your workspace and follows `<#import>` and `<#include>`, so macros, functions, and variables are known across files. Built-ins, directives, special variables, and literals follow FreeMarker 2.3.35.
 
+Both tag syntaxes are supported, `<#if x>...</#if>` and `[#if x]...[/#if]`, as well as both interpolation syntaxes, `${x}` and `[=x]`.
+
 ## Features
 
 ### Completion
@@ -69,17 +71,29 @@ ${toolkit.nested.label}
 - Template paths are resolved relative to the current template, then relative to the workspace folders, then relative to the folders in `freemarker.templateRoots`.
 - Names that start with the private prefix (`_` by default) are hidden from completion and navigation outside the template that defines them.
 
+## Square bracket syntax
+
+Everything above works the same in templates that use the square bracket syntax. Completion inserts square bracket tags there, and documentation and messages show them.
+
+- **Tags** (`[#if x]`, `[@box /]`, `[#-- comment --]`): by default the first FreeMarker tag of a template decides which syntax it uses, so nothing has to be configured. If your FreeMarker configuration sets `tag_syntax` to a fixed value, set `freemarker.tagSyntax` to match. A template that starts with `<#ftl>` or `[#ftl]` always uses the syntax of that tag.
+- **Interpolations** (`[=x]`): FreeMarker cannot detect these per template, so set `freemarker.interpolationSyntax` to `squareBracket` if your configuration uses them. `${x}` and `#{x}` are then plain text.
+
+The two are independent: `[#if x]${y}[/#if]` and `<#if x>[=y]</#if>` are both possible.
+
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `freemarker.templateRoots` | `[]` | Workspace-relative folders that are searched when resolving template paths, matching the roots of your template loader. |
+| `freemarker.tagSyntax` | `auto` | `auto`, `angleBracket`, or `squareBracket`, matching the `tag_syntax` setting of FreeMarker. With `auto`, the first FreeMarker tag of a template decides. |
+| `freemarker.interpolationSyntax` | `legacy` | `legacy` (`${x}` and `#{x}`), `dollar` (only `${x}`), or `squareBracket` (only `[=x]`), matching the `interpolation_syntax` setting of FreeMarker. |
 | `freemarker.validateTemplatePaths` | `true` | Warn about `import`/`include` paths that cannot be found. Turn this off if templates are loaded from outside the workspace, for example from a JAR. |
 | `freemarker.privatePrefix` | `_` | Prefix that marks macros, functions, variables, and namespace aliases as private to their template. |
 
 ## Limitations
 
-- Only the angle bracket syntax (`<#if>`, `${...}`) is supported, not the square bracket syntax (`[#if]`, `[=...]`).
+- Syntax highlighting cannot tell which syntax a template uses, so it colors both. Text such as `[#note]` in an angle bracket template is colored like a tag, but is not treated as one anywhere else.
+- Toggle Block Comment always inserts `<#-- -->`, also in square bracket templates.
 - Only `import`/`include` paths written as plain string literals are followed. Paths that are computed at runtime are ignored.
 - Objects and methods that come from the Java data model are not known to the extension, so there is no completion or validation for them.
 - Types are only inferred from literals, assignments of literals, and loop variables. Everything else gets the full, alphabetical list of built-ins.
@@ -90,6 +104,8 @@ ${toolkit.nested.label}
 Open the folder in VS Code and press `F5` to start an Extension Development Host with the extension loaded.
 
 Run the tests with `npm test`. They need no VS Code installation.
+
+Square bracket templates are rewritten to the default syntax before they are analyzed (`syntax.js`). The rewrite keeps every character at its offset, so the rest of the code only has to understand angle bracket tags and `${...}`.
 
 The lists of built-ins, directives, and special variables live in `builtins.js` and `directives.js`. The highlighting patterns in `syntaxes/freemarker.tmLanguage.json` are generated from them (`builtinGrammarPattern()` and `specialVariableGrammarPattern()`), and the tests fail if the two no longer match.
 

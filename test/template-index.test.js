@@ -105,4 +105,37 @@ assert.deepStrictEqual(
   ]
 );
 
+const square = parseTemplate([
+  '[#-- Renders a card. --]',
+  '[#macro card title width=2]',
+  '[#-- [#macro hidden] --]',
+  '[#assign wide = width > 2]',
+  '[#assign note]text[/#assign]',
+  '[#list entries as entry][/#list]',
+  '[#import "/lib/cards.ftl" as cards]',
+  '<#macro notATag>'
+].join('\n'));
+assert.strictEqual(square.tagSyntax, 'square');
+assert.deepStrictEqual(
+  square.symbols.map(({ name, kind, declaration, value }) => [name, kind, declaration, value]),
+  [
+    ['card', 'macro', '[#macro card title width=2]', undefined],
+    ['wide', 'variable', '[#assign wide = width > 2]', 'width > 2'],
+    ['note', 'variable', '[#assign note]text[/#assign]', 'text'],
+    ['entry', 'variable', '[#list entries as entry]', undefined]
+  ]
+);
+assert.strictEqual(square.symbols[0].documentation, 'Renders a card.');
+assert.deepStrictEqual(square.symbols[0].parameters, [
+  { name: 'title', defaultValue: undefined },
+  { name: 'width', defaultValue: '2' }
+]);
+assert.deepStrictEqual(square.symbols.map((symbol) => symbolType(symbol)), [undefined, undefined, 'string', 'loop variable']);
+assert.deepStrictEqual(square.directives.map(({ kind, path, alias }) => [kind, path, alias]), [['import', '/lib/cards.ftl', 'cards']]);
+assert.strictEqual(square.source.length, square.display.length);
+
+const squareInterpolation = parseTemplate('<#assign a = 1>[=a]', { interpolationSyntax: 'squareBracket' });
+assert.strictEqual(squareInterpolation.source, '<#assign a = 1>${a}');
+assert.strictEqual(squareInterpolation.display, '<#assign a = 1>[=a]');
+
 console.log('Template parser tests passed.');

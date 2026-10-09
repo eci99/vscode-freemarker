@@ -3,9 +3,13 @@
   "scopeName": "text.html.ftl",
   "patterns": [
     { "include": "#comment" },
+    { "include": "#squareComment" },
     { "include": "#interpolation" },
+    { "include": "#squareInterpolation" },
     { "include": "#directive" },
+    { "include": "#squareDirective" },
     { "include": "#userDirective" },
+    { "include": "#squareUserDirective" },
     { "include": "text.html.basic" }
   ],
   "repository": {
@@ -16,6 +20,17 @@
         "0": { "name": "punctuation.definition.comment.begin.freemarker" }
       },
       "end": "-->",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.freemarker" }
+      }
+    },
+    "squareComment": {
+      "name": "comment.block.freemarker",
+      "begin": "\\[#--",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.freemarker" }
+      },
+      "end": "--\\]",
       "endCaptures": {
         "0": { "name": "punctuation.definition.comment.end.freemarker" }
       }
@@ -35,6 +50,20 @@
         { "include": "#expression" }
       ]
     },
+    "squareInterpolation": {
+      "name": "meta.interpolation.freemarker",
+      "begin": "\\[=",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.freemarker" }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.freemarker" }
+      },
+      "patterns": [
+        { "include": "#squareExpression" }
+      ]
+    },
     "directive": {
       "name": "meta.directive.freemarker",
       "begin": "</?(#)([A-Za-z_][A-Za-z0-9_-]*)",
@@ -52,6 +81,23 @@
         { "include": "#expression" }
       ]
     },
+    "squareDirective": {
+      "name": "meta.directive.freemarker",
+      "begin": "\\[/?(#)([A-Za-z_][A-Za-z0-9_-]*)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" },
+        "1": { "name": "punctuation.definition.tag.freemarker" },
+        "2": { "name": "keyword.control.directive.freemarker" }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" }
+      },
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#squareExpression" }
+      ]
+    },
     "userDirective": {
       "name": "meta.directive.user.freemarker",
       "begin": "</?(@)([A-Za-z_][A-Za-z0-9_.-]*)",
@@ -66,6 +112,39 @@
       },
       "patterns": [
         { "include": "#interpolation" },
+        { "include": "#expression" }
+      ]
+    },
+    "squareUserDirective": {
+      "name": "meta.directive.user.freemarker",
+      "begin": "\\[/?(@)([A-Za-z_][A-Za-z0-9_.-]*)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" },
+        "1": { "name": "punctuation.definition.tag.freemarker" },
+        "2": { "name": "entity.name.function.freemarker" }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.freemarker" }
+      },
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#squareExpression" }
+      ]
+    },
+    "squareExpression": {
+      "patterns": [
+        {
+          "begin": "\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.freemarker" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.freemarker" }
+          },
+          "patterns": [{ "include": "#squareExpression" }]
+        },
         { "include": "#expression" }
       ]
     },

@@ -5,6 +5,8 @@ const BLOCK_DIRECTIVES = new Set([
 ]);
 const BRANCH_DIRECTIVES = new Set(['else', 'elseif', 'case', 'default', 'recover']);
 
+const { normalizeTemplate } = require('./syntax');
+
 function maskComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) =>
     comment.replace(/[^\r\n]/g, ' ')
@@ -57,6 +59,7 @@ function formatterMarker(line) {
 
   const commentOpeners = [
     { token: '<#--', closer: '-->' },
+    { token: '[#--', closer: '--]' },
     { token: '<!--', closer: '-->' },
     { token: '/*', closer: '*/' },
     { token: '//', closer: '' }
@@ -92,7 +95,7 @@ function formatterMarker(line) {
 function formatTemplate(text, options = {}) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const sourceLines = text.split(/\r?\n/);
-  const maskedLines = maskComments(text).split(/\r?\n/);
+  const maskedLines = maskComments(normalizeTemplate(text, options).text).split(/\r?\n/);
   const indentUnit = options.insertSpaces === false
     ? '\t'
     : ' '.repeat(Math.max(1, options.tabSize || 4));
