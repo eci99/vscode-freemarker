@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { validateTemplate } = require('../validator');
+const { templateBlocks, validateTemplate } = require('../validator');
 
 assert.deepStrictEqual(validateTemplate('<#if ready>\n${value}\n</#if>'), []);
 assert.deepStrictEqual(validateTemplate('<#assign captured>text</#assign>'), []);
@@ -36,5 +36,49 @@ assert.deepStrictEqual(unknownInTags.map((issue) => issue.message), [
   'Unknown built-in ?json.'
 ]);
 assert.strictEqual(validateTemplate('${a?foo(b?bar)}').length, 2);
+
+for (const valid of [
+  '<#list items as item>${item}<#sep>, </#list>',
+  '<#list items as item>${item}<#sep>, </#sep></#list>',
+  '<#list items><#items as item>${item}<#sep>, </#items><#else>none</#list>',
+  '<#if ready><#list items as item><#if item.last>.<#sep>, </#if></#list></#if>',
+  '<#attempt>${risky}<#recover>failed</#attempt>',
+  '<#attempt>${risky}<#recover>failed</#recover></#attempt>',
+  '<#visit node><#recurse>',
+  '<#macro box><#local body>text</#local><#global shared>text</#global></#macro>',
+  '<#assign counter++><#assign total += 1>',
+  '<#assign title in page>text</#assign>',
+  '<#if a>1<#elseif b>2<#else>3</#if>',
+  '<#switch kind><#case 1>one<#break><#on 2, 3>more<#default>other</#switch>',
+  '<#noparse><#if open>${name?not_checked}</#noparse>'
+]) {
+  assert.deepStrictEqual(validateTemplate(valid), [], valid);
+}
+
+assert.deepStrictEqual(validateTemplate('<#else>').map((issue) => issue.message), [
+  '<#else> must be directly inside <#if> or <#list>.'
+]);
+assert.deepStrictEqual(validateTemplate('<#if a><@box><#else></@box></#if>').map((issue) => issue.message), [
+  '<#else> must be directly inside <#if> or <#list>.'
+]);
+assert.deepStrictEqual(validateTemplate('<#list items as item><#elseif b></#list>').map((issue) => issue.message), [
+  '<#elseif> must be directly inside <#if>.'
+]);
+assert.deepStrictEqual(validateTemplate('<#case 1><#recover>').map((issue) => issue.message), [
+  '<#case> must be directly inside <#switch>.',
+  '<#recover> must be directly inside <#attempt>.'
+]);
+assert.deepStrictEqual(validateTemplate('<#noparse><#if open>').map((issue) => issue.message), [
+  'Unclosed directive <#if>.',
+  'Unclosed directive <#noparse>.'
+]);
+
+const { blocks, unclosed } = templateBlocks('<#if a>\n<#else>\n</#if>\n<#list items as item><@box>');
+assert.deepStrictEqual(blocks.map((block) => [block.name, block.open.offset, block.close.offset, block.branches.length]), [
+  ['if', 0, 16, 1]
+]);
+assert.strictEqual(blocks[0].open.nameLength, '<#if'.length);
+assert.strictEqual(blocks[0].close.nameLength, '</#if'.length);
+assert.deepStrictEqual(unclosed.map((block) => block.name), ['list', 'box']);
 
 console.log('Template validator tests passed.');

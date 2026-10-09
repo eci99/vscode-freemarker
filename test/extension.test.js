@@ -170,9 +170,36 @@ const vscode = {
   DocumentSymbol,
   SymbolKind: { Function: 11, Method: 5, Variable: 12, Namespace: 2, Module: 1, File: 0 },
   Diagnostic,
-  DiagnosticSeverity: { Error: 0 },
+  DiagnosticSeverity: { Error: 0, Warning: 1 },
   CompletionItemTag: { Deprecated: 1 },
-  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
+  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Keyword: 13, Snippet: 14, Constant: 20 },
+  FoldingRangeKind: { Comment: 1 },
+  FoldingRange: class {
+    constructor(start, end, kind) {
+      this.start = start;
+      this.end = end;
+      this.kind = kind;
+    }
+  },
+  DocumentHighlight: class {
+    constructor(range) {
+      this.range = range;
+    }
+  },
+  DocumentLink: class {
+    constructor(range, target) {
+      this.range = range;
+      this.target = target;
+    }
+  },
+  SymbolInformation: class {
+    constructor(name, kind, containerName, location) {
+      this.name = name;
+      this.kind = kind;
+      this.containerName = containerName;
+      this.location = location;
+    }
+  },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
   },
@@ -293,6 +320,22 @@ const vscode = {
     registerCompletionItemProvider: (_selector, provider, ...triggerCharacters) => {
       providers.completion = provider;
       providers.completionTriggerCharacters = triggerCharacters;
+      return disposable;
+    },
+    registerDocumentLinkProvider: (_selector, provider) => {
+      providers.documentLinks = provider;
+      return disposable;
+    },
+    registerWorkspaceSymbolProvider: (provider) => {
+      providers.workspaceSymbols = provider;
+      return disposable;
+    },
+    registerFoldingRangeProvider: (_selector, provider) => {
+      providers.folding = provider;
+      return disposable;
+    },
+    registerDocumentHighlightProvider: (_selector, provider) => {
+      providers.highlights = provider;
       return disposable;
     },
     registerDocumentFormattingEditProvider: (_selector, provider) => {
@@ -1065,6 +1108,159 @@ async function run() {
   assert.strictEqual(diagnosticEntries.get(builtinUri.fsPath).length, 1);
   assert(diagnosticEntries.get(builtinUri.fsPath)[0].message.includes('Did you mean ?upper_case?'));
   assert.deepStrictEqual(diagnosticEntries.get(builtinUri.fsPath)[0].range.start, new Position(0, 8));
+
+  // Built-ins that fit the type of the expression are listed first.
+  const firstBuiltins = async (text) => (await builtinCompletionsAt(text))
+    .sort((left, right) => left.sortText.localeCompare(right.sortText))
+    .slice(0, 3)
+    .map((item) => item.detail);
+  assert.deepStrictEqual(await firstBuiltins('<#assign title = "Home">\n${title?'), Array(3).fill('string built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#assign count = 3>\n${count?'), Array(3).fill('number built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#assign names = ["a", "b"]>\n${names?'), Array(3).fill('sequence built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#assign names = {"a": 1}>\n${names?'), ['hash built-in', 'hash built-in', 'number built-in']);
+  assert.deepStrictEqual(await firstBuiltins('<#assign names = {"a": "b"}>\n${names.a?'), Array(3).fill('string built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#assign note>text</#assign>\n${note?'), Array(3).fill('string built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#list items as item>${item?'), Array(3).fill('loop variable built-in'));
+  assert.deepStrictEqual(await firstBuiltins('${"text"?'), Array(3).fill('string built-in'));
+  assert.deepStrictEqual(await firstBuiltins('${12.5?'), Array(3).fill('number built-in'));
+  assert.deepStrictEqual(await firstBuiltins('<#assign title = "Home">\n${title?trim?'), ['number built-in', 'expert built-in', 'node built-in']);
+  assert.deepStrictEqual(await firstBuiltins('${unknown?'), ['number built-in', 'expert built-in', 'node built-in']);
+
+  // Directives, end tags, and special variables
+  assert(providers.completionTriggerCharacters.includes('#'));
+  const directiveCompletions = await builtinCompletionsAt('<#');
+  assert(directiveCompletions.some((item) => item.label === 'list' && item.kind === vscode.CompletionItemKind.Keyword));
+  assert(directiveCompletions.some((item) => item.label === 'foreach' && item.tags.includes(vscode.CompletionItemTag.Deprecated)));
+  assert(!directiveCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
+  assert((await builtinCompletionsAt('<#li')).some((item) => item.label === 'list'));
+  assert.deepStrictEqual(
+    (await builtinCompletionsAt('<#if a><#list xs as x><@box>${x}</@box><#sep>, </#')).map((item) => item.insertText),
+    ['list>', 'if>']
+  );
+  assert.deepStrictEqual(
+    (await builtinCompletionsAt('<#if a><@layout.page><@box></@')).map((item) => item.insertText),
+    ['box>', 'layout.page>']
+  );
+  assert.deepStrictEqual(await builtinCompletionsAt('<#if a></#if></#'), []);
+  const closedTagDocument = new Document(builtinUri, '<#if a></#>');
+  assert.deepStrictEqual(
+    (await providers.completion.provideCompletionItems(closedTagDocument, new Position(0, 10))).map((item) => item.insertText),
+    ['if']
+  );
+
+  const specialCompletions = await builtinCompletionsAt('${.');
+  assert(specialCompletions.some((item) => item.label === 'now' && item.detail === 'special variable'));
+  assert((await builtinCompletionsAt('<#if .main')).some((item) => item.label === 'main_template_name'));
+  assert(!(await builtinCompletionsAt('${user.')).some((item) => item.detail === 'special variable'));
+  assert(!(await builtinCompletionsAt('${1.')).some((item) => item.detail === 'special variable'));
+  assert(!(await builtinCompletionsAt('<p>Text.')).some((item) => item.detail === 'special variable'));
+
+  const directiveHover = await builtinHoverAt('<#list xs as x></#list>', 'list');
+  assert(directiveHover.contents[0].value.includes('**directive list**'));
+  assert(directiveHover.contents[0].value.includes('<#list sequence as item>'));
+  assert((await builtinHoverAt('${a}</#list>', 'list')).contents[0].value.includes('**directive list**'));
+  assert.strictEqual(await builtinHoverAt('<#unknown>', 'unknown'), undefined);
+  assert((await builtinHoverAt('${.now}', 'now')).contents[0].value.includes('**special variable .now**'));
+  assert((await builtinHoverAt('${.mainTemplateName}', 'mainTemplateName')).contents[0].value.includes('.main_template_name'));
+
+  // Problems found with the workspace index
+  const indexedIssues = async (text) => {
+    const indexedDocument = new Document(uri('/virtual/work/pages/checked.ftl'), text);
+    onDidOpenDocument(indexedDocument);
+    await new Promise((resolve) => setImmediate(resolve));
+    return (diagnosticEntries.get(indexedDocument.uri.fsPath) || []).map((entry) => [entry.message, entry.severity]);
+  };
+  assert.deepStrictEqual(await indexedIssues([
+    '<#import "../lib/cards.ftl" as cards>',
+    '<#include "shared.ftl">',
+    '<#include "/pages/shared.ftl">',
+    '<#include "missing.ftl" ignore_missing=true>',
+    '<#include "${folder}/dynamic.ftl">',
+    '<#include folder + "/dynamic.ftl">',
+    '<@cards.render title="A" />',
+    '<@cards.render "A" />',
+    '<@cards._hidden />',
+    '<@layout />',
+    '<@fromDataModel.render />',
+    '<@fromDataModel />'
+  ].join('\n')), []);
+  assert.deepStrictEqual(await indexedIssues([
+    '<#import "../lib/cards.ftl" as cards>',
+    '<#import "../lib/missing.ftl" as missing>',
+    '<#include "nowhere.ftl">',
+    '<@cards.rendr title="A" />',
+    '<@cards.render className="x">card</@cards.render>',
+    '<@cards.render />',
+    '<#else>'
+  ].join('\n')), [
+    ['<#else> must be directly inside <#if> or <#list>.', vscode.DiagnosticSeverity.Error],
+    ['Template "../lib/missing.ftl" was not found in the workspace or the configured template roots.', vscode.DiagnosticSeverity.Warning],
+    ['Template "nowhere.ftl" was not found in the workspace or the configured template roots.', vscode.DiagnosticSeverity.Warning],
+    ['"rendr" is not defined in namespace "cards" (cards.ftl).', vscode.DiagnosticSeverity.Warning],
+    ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning],
+    ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning]
+  ]);
+  const missingTitleDocument = new Document(uri('/virtual/work/pages/checked.ftl'), '<#import "../lib/cards.ftl" as cards>\n<@cards.render />');
+  onDidOpenDocument(missingTitleDocument);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(diagnosticEntries.get(missingTitleDocument.uri.fsPath)[0].range.start, new Position(1, 2));
+
+  // Links, workspace symbols, folding, and matching tags
+  const links = await providers.documentLinks.provideDocumentLinks(document);
+  assert.deepStrictEqual(links.map((link) => link.target.fsPath), [
+    '/virtual/work/lib/cards.ftl',
+    '/virtual/work/lib/toolkit.ftl',
+    '/virtual/work/lib/cards.ftl',
+    '/virtual/work/pages/shared.ftl'
+  ]);
+  assert.deepStrictEqual(links[0].range.start, new Position(0, 10));
+  assert.deepStrictEqual(links[0].range.end, new Position(0, 26));
+
+  const foundSymbols = await providers.workspaceSymbols.provideWorkspaceSymbols('rend');
+  assert.deepStrictEqual(
+    foundSymbols.map((symbol) => [symbol.name, symbol.containerName]).sort(),
+    [['render', 'cards.ftl'], ['render', 'nested.ftl']]
+  );
+  const cardsRender = foundSymbols.find((symbol) => symbol.containerName === 'cards.ftl');
+  assert.strictEqual(cardsRender.kind, vscode.SymbolKind.Method);
+  assert.deepStrictEqual(cardsRender.location.range.start, new Position(4, 8));
+  const allSymbols = await providers.workspaceSymbols.provideWorkspaceSymbols('');
+  assert(allSymbols.some((symbol) => symbol.name === 'theme' && symbol.kind === vscode.SymbolKind.Variable));
+  assert(!allSymbols.some((symbol) => symbol.name === 'macroOnly' || symbol.name === 'product'));
+
+  const foldingDocument = new Document(builtinUri, [
+    '<#-- Lists the',
+    '     products. -->',
+    '<#if ready>',
+    '<ul>',
+    '<#list products as product>',
+    '<li>${product}</li>',
+    '</#list>',
+    '</ul>',
+    '<#else>',
+    '<p>',
+    '  Loading',
+    '</p>',
+    '</#if>',
+    '<#if inline>yes</#if>'
+  ].join('\n'));
+  assert.deepStrictEqual(
+    providers.folding.provideFoldingRanges(foldingDocument)
+      .map((range) => [range.start, range.end])
+      .sort((left, right) => left[0] - right[0]),
+    [[0, 1], [2, 7], [4, 5], [8, 11], [9, 10]]
+  );
+  assert.strictEqual(
+    providers.folding.provideFoldingRanges(foldingDocument).find((range) => range.start === 0).kind,
+    vscode.FoldingRangeKind.Comment
+  );
+
+  const highlightedTags = (position) => (providers.highlights.provideDocumentHighlights(foldingDocument, position) || [])
+    .map((highlight) => foldingDocument.getText(highlight.range));
+  assert.deepStrictEqual(highlightedTags(new Position(2, 2)), ['<#if', '<#else', '</#if']);
+  assert.deepStrictEqual(highlightedTags(new Position(8, 4)), ['<#if', '<#else', '</#if']);
+  assert.deepStrictEqual(highlightedTags(new Position(6, 3)), ['<#list', '</#list']);
+  assert.deepStrictEqual(highlightedTags(new Position(5, 8)), []);
 
   console.log('Extension integration tests passed.');
 }

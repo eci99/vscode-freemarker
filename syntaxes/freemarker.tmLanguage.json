@@ -88,6 +88,10 @@
           "name": "support.function.builtin.freemarker"
         },
         {
+          "match": "(?<![A-Za-z0-9_.\\])\"'])\\.(args|autoEsc|auto_esc|callerTemplateName|caller_template_name|currentTemplateName|current_template_name|dataModel|data_model|error|getOptionalTemplate|get_optional_template|globals|incompatibleImprovements|incompatible_improvements|lang|locale|localeObject|locale_object|locals|main|mainTemplateName|main_template_name|namespace|node|now|outputEncoding|outputFormat|output_encoding|output_format|pass|templateName|template_name|timeZone|time_zone|urlEscapingCharset|url_escaping_charset|vars|version)\\b",
+          "name": "variable.language.freemarker"
+        },
+        {
           "match": "\\b(true|false|yes|no|null)\\b",
           "name": "constant.language.freemarker"
         },

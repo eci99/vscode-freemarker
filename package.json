@@ -13,7 +13,7 @@
     "Snippets"
   ],
   "scripts": {
-    "test": "node ./test/builtins.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/extension.test.js"
+    "test": "node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/extension.test.js"
   },
   "contributes": {
     "configuration": {
@@ -24,6 +24,11 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Additional workspace-relative directories searched when resolving template paths."
+        },
+        "freemarker.validateTemplatePaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about import and include paths that cannot be found in the workspace or the configured template roots. Turn this off if templates are loaded from outside the workspace, for example from a JAR."
         },
         "freemarker.privatePrefix": {
           "type": "string",

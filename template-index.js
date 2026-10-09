@@ -169,6 +169,43 @@ function splitParameters(text) {
   return parameters;
 }
 
+function matchingClose(text, start) {
+  let depth = 0;
+  let quote = null;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '{' || character === '[' || character === '(') depth += 1;
+    else if ((character === '}' || character === ']' || character === ')') && --depth === 0) return index;
+  }
+  return -1;
+}
+
+// The type of a literal expression, named like the built-in categories.
+function literalType(expression) {
+  const text = expression.trim();
+  if (/^r?(["'])(?:\\.|(?!\1)[^\\])*\1$/.test(text)) return 'string';
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return 'number';
+  if (/^(?:true|false)$/.test(text)) return 'boolean';
+  if ((text[0] === '[' || text[0] === '{') && matchingClose(text, 0) === text.length - 1) {
+    return text[0] === '[' ? 'sequence' : 'hash';
+  }
+  return undefined;
+}
+
+// The type of a declared variable, as far as its declaration shows it.
+function symbolType(symbol) {
+  const declaration = symbol.declaration || '';
+  if (/^<#(?:list|items)\b/.test(declaration)) return 'loop variable';
+  if (typeof symbol.value !== 'string') return undefined;
+  if (/^<#assign\s+[A-Za-z_][A-Za-z0-9_]*\s*>/.test(declaration) && !symbol.name.includes('.')) return 'string';
+  return literalType(symbol.value);
+}
+
 function parseTemplate(text) {
   const source = withoutComments(text);
   const symbols = [];
@@ -302,4 +339,4 @@ function parseTemplate(text) {
   return { source, symbols, directives };
 }
 
-module.exports = { parseTemplate };
+module.exports = { findTagEnd, literalType, parseTemplate, symbolType };

@@ -3,8 +3,15 @@ const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
 const { BUILTINS, builtinBefore, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
 const { formatTemplate } = require('./formatter');
-const { parseTemplate } = require('./template-index');
-const { validateTemplate } = require('./validator');
+const {
+  DIRECTIVES,
+  SPECIAL_VARIABLES,
+  findDirective,
+  findSpecialVariable,
+  specialVariableNameStart
+} = require('./directives');
+const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
+const { templateBlocks, validateTemplate } = require('./validator');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 
@@ -222,12 +229,28 @@ class TemplateWorkspaceIndex {
       );
     if (!declaration || declaration.symbol.kind !== 'macro') return undefined;
 
-    const usedParameters = new Set();
+    const usedParameters = this.namedArguments(invocation[2]);
+    return declaration.symbol.parameters
+      .filter(({ name }) => !usedParameters.has(name))
+      .map(({ name, defaultValue }) => {
+        const label = defaultValue === undefined ? `${name} (Required)` : `${name}=${defaultValue}`;
+        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Property);
+        item.insertText = `${name}=`;
+        item.detail = `Parameter of ${declaration.symbol.name}`;
+        if (defaultValue !== undefined) item.documentation = new vscode.MarkdownString(`Default: \`${defaultValue}\``);
+        item.sortText = name.toLowerCase();
+        return item;
+      });
+  }
+
+  namedArguments(text) {
+    const names = new Set();
+    let quote = null;
     let nesting = 0;
-    for (let index = 0; index < invocation[2].length; index += 1) {
-      const character = invocation[2][index];
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
       if (quote) {
-        if (character === quote && invocation[2][index - 1] !== '\\') quote = null;
+        if (character === quote && text[index - 1] !== '\\') quote = null;
         continue;
       }
       if (character === '"' || character === "'") {
@@ -242,27 +265,219 @@ class TemplateWorkspaceIndex {
         nesting = Math.max(0, nesting - 1);
         continue;
       }
-      if (nesting > 0 || !/[A-Za-z_]/.test(character) || (index > 0 && !/\s/.test(invocation[2][index - 1]))) continue;
+      if (nesting > 0 || !/[A-Za-z_]/.test(character) || (index > 0 && !/\s/.test(text[index - 1]))) continue;
 
       const nameStart = index;
-      while (/[A-Za-z0-9_]/.test(invocation[2][index] || '')) index += 1;
-      const name = invocation[2].slice(nameStart, index);
-      while (/\s/.test(invocation[2][index] || '')) index += 1;
-      if (invocation[2][index] === '=') usedParameters.add(name);
+      while (/[A-Za-z0-9_]/.test(text[index] || '')) index += 1;
+      const name = text.slice(nameStart, index);
+      while (/\s/.test(text[index] || '')) index += 1;
+      if (text[index] === '=') names.add(name);
       index -= 1;
     }
+    return names;
+  }
 
-    return declaration.symbol.parameters
-      .filter(({ name }) => !usedParameters.has(name))
-      .map(({ name, defaultValue }) => {
-        const label = defaultValue === undefined ? `${name} (Required)` : `${name}=${defaultValue}`;
-        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Property);
-        item.insertText = `${name}=`;
-        item.detail = `Parameter of ${declaration.symbol.name}`;
-        if (defaultValue !== undefined) item.documentation = new vscode.MarkdownString(`Default: \`${defaultValue}\``);
-        item.sortText = name.toLowerCase();
-        return item;
+  hasUnresolvedIncludes(record) {
+    return this.includedRecords(record).some((included) =>
+      included.directives.some((directive) =>
+        directive.kind === 'include' && !this.resolveTemplate(included, directive.path)
+      )
+    );
+  }
+
+  // Problems that only show up with knowledge of the other templates in the workspace.
+  semanticIssues(record) {
+    const issues = [];
+    const { source } = record;
+
+    if (vscode.workspace.getConfiguration('freemarker').get('validateTemplatePaths', true)) {
+      for (const directive of record.directives) {
+        const beforePath = source.slice(directive.offset, directive.pathOffset - 1);
+        const afterPath = source.slice(directive.pathOffset + directive.pathLength + 1, directive.endOffset - 1);
+        const isLiteralPath = /^<#(?:import|include)\s+r?$/.test(beforePath)
+          && !/^\s*[+?\[(]/.test(afterPath)
+          && !/[*$#]/.test(directive.path);
+        if (!isLiteralPath || /\bignore_missing\s*=\s*true\b/.test(afterPath)) continue;
+        if (this.resolveTemplate(record, directive.path)) continue;
+        issues.push({
+          message: `Template "${directive.path}" was not found in the workspace or the configured template roots.`,
+          offset: directive.pathOffset,
+          length: directive.pathLength,
+          severity: 'warning'
+        });
+      }
+    }
+
+    const visible = this.includedSymbols(record);
+    const invocations = /<@([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/g;
+    let match;
+    while ((match = invocations.exec(source)) !== null) {
+      const segments = match[1].split('.');
+      const memberName = segments[segments.length - 1];
+      const nameOffset = match.index + 2;
+      let declaration;
+      if (segments.length === 1) {
+        declaration = visible.find(({ symbol }) => symbol.kind === 'macro' && symbol.name === memberName);
+      } else {
+        if (visible.some(({ symbol }) => symbol.kind === 'variable' && symbol.name === segments[0])) continue;
+        const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1), true);
+        if (!namespace) continue;
+        declaration = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === memberName);
+        if (!declaration) {
+          if (this.importedRecord(namespace, memberName) || this.hasUnresolvedIncludes(namespace)) continue;
+          issues.push({
+            message: `"${memberName}" is not defined in namespace "${segments.slice(0, -1).join('.')}" (${path.basename(namespace.uri.fsPath)}).`,
+            offset: nameOffset + match[1].length - memberName.length,
+            length: memberName.length,
+            severity: 'warning'
+          });
+          continue;
+        }
+      }
+      if (!declaration || declaration.symbol.kind !== 'macro') continue;
+
+      const tagEnd = findTagEnd(source, invocations.lastIndex);
+      if (tagEnd < 0) continue;
+      const argumentText = source.slice(invocations.lastIndex, tagEnd).replace(/\/\s*$/, '');
+      const supplied = this.namedArguments(argumentText);
+      // Positional arguments cannot be matched to parameter names reliably.
+      if (supplied.size === 0 && argumentText.split(';')[0].trim()) continue;
+      const missing = (declaration.symbol.parameters || [])
+        .filter(({ name, defaultValue }) => defaultValue === undefined && !supplied.has(name))
+        .map(({ name }) => `"${name}"`);
+      if (missing.length > 0) {
+        issues.push({
+          message: `Missing required parameter${missing.length > 1 ? 's' : ''} ${missing.join(', ')} for macro "${declaration.symbol.name}".`,
+          offset: nameOffset,
+          length: match[1].length,
+          severity: 'warning'
+        });
+      }
+    }
+    return issues;
+  }
+
+  documentLinks(record, document) {
+    return record.directives.flatMap((directive) => {
+      const target = this.resolveTemplate(record, directive.path);
+      if (!target) return [];
+      const link = new vscode.DocumentLink(
+        new vscode.Range(
+          document.positionAt(directive.pathOffset),
+          document.positionAt(directive.pathOffset + directive.pathLength)
+        ),
+        target.uri
+      );
+      link.tooltip = 'Open template';
+      return [link];
+    });
+  }
+
+  async workspaceSymbols(query) {
+    await this.ready;
+    const wanted = query.toLowerCase();
+    const matchesQuery = (name) => {
+      let position = 0;
+      for (const character of name.toLowerCase()) {
+        if (character === wanted[position]) position += 1;
+      }
+      return position === wanted.length;
+    };
+
+    const results = [];
+    for (const record of this.records.values()) {
+      const lineStarts = [0];
+      for (let index = record.source.indexOf('\n'); index >= 0; index = record.source.indexOf('\n', index + 1)) {
+        lineStarts.push(index + 1);
+      }
+      const positionAt = (offset) => {
+        let line = lineStarts.length - 1;
+        while (lineStarts[line] > offset) line -= 1;
+        return new vscode.Position(line, offset - lineStarts[line]);
+      };
+      for (const symbol of record.symbols) {
+        if (symbol.topLevel === false
+          || symbol.name.includes('.')
+          || /^<#(?:list|items)\b/.test(symbol.declaration || '')
+          || !matchesQuery(symbol.name)) continue;
+        const kind = symbol.kind === 'macro'
+          ? vscode.SymbolKind.Method
+          : symbol.kind === 'function'
+            ? vscode.SymbolKind.Function
+            : vscode.SymbolKind.Variable;
+        results.push(new vscode.SymbolInformation(
+          symbol.name,
+          kind,
+          path.basename(record.uri.fsPath),
+          new vscode.Location(record.uri, new vscode.Range(
+            positionAt(symbol.offset),
+            positionAt(symbol.offset + symbol.length)
+          ))
+        ));
+      }
+    }
+    return results;
+  }
+
+  foldingRanges(document) {
+    const text = document.getText();
+    const ranges = [];
+    const lineOf = (offset) => document.positionAt(offset).line;
+
+    // Each branch of a block, such as the parts before and after <#else>, folds separately.
+    for (const block of templateBlocks(text).blocks) {
+      const tags = [block.open, ...block.branches, block.close];
+      for (let index = 0; index < tags.length - 1; index += 1) {
+        ranges.push({ start: lineOf(tags[index].offset), end: lineOf(tags[index + 1].offset) - 1 });
+      }
+    }
+
+    const comments = /<#--[\s\S]*?-->/g;
+    let match;
+    while ((match = comments.exec(text)) !== null) {
+      ranges.push({
+        start: lineOf(match.index),
+        end: lineOf(match.index + match[0].length),
+        kind: vscode.FoldingRangeKind.Comment
       });
+    }
+
+    // Registering a provider turns off the editor's own indentation folding, which the
+    // HTML between the FreeMarker tags still needs.
+    const lines = text.split(/\r?\n/);
+    const open = [];
+    let lastContentLine = -1;
+    const closeDeeperThan = (indentation) => {
+      while (open.length > 0 && open[open.length - 1].indentation >= indentation) {
+        ranges.push({ start: open.pop().line, end: lastContentLine });
+      }
+    };
+    lines.forEach((line, lineNumber) => {
+      if (!line.trim()) return;
+      const indentation = line.length - line.trimStart().length;
+      closeDeeperThan(indentation);
+      open.push({ line: lineNumber, indentation });
+      lastContentLine = lineNumber;
+    });
+    closeDeeperThan(0);
+
+    const starts = new Set();
+    return ranges
+      .filter(({ start, end }) => end > start && !starts.has(start) && starts.add(start))
+      .map(({ start, end, kind }) => new vscode.FoldingRange(start, end, kind));
+  }
+
+  documentHighlights(document, position) {
+    const offset = document.offsetAt(position);
+    for (const block of templateBlocks(document.getText()).blocks) {
+      const tags = [block.open, ...block.branches, block.close];
+      if (!tags.some((tag) => offset >= tag.offset && offset <= tag.offset + tag.nameLength)) continue;
+      return tags.map((tag) => new vscode.DocumentHighlight(new vscode.Range(
+        document.positionAt(tag.offset),
+        document.positionAt(tag.offset + tag.nameLength)
+      )));
+    }
+    return undefined;
   }
 
   openCall(source) {
@@ -698,6 +913,24 @@ class TemplateWorkspaceIndex {
       );
     }
 
+    const wordRange = new vscode.Range(document.positionAt(selectedWord.start), document.positionAt(selectedWord.end));
+    if (/<\/?#$/.test(record.source.slice(Math.max(0, selectedWord.start - 3), selectedWord.start))) {
+      const directive = findDirective(selectedWord.name);
+      if (!directive) return undefined;
+      const parts = [`**directive ${directive.name}**`, directive.description, `\`\`\`ftl\n${directive.syntax}\n\`\`\``];
+      if (directive.deprecated) parts.push('Deprecated');
+      return new vscode.Hover(new vscode.MarkdownString(parts.join('\n\n')), wordRange);
+    }
+    if (specialVariableNameStart(beforeWord) >= 0
+      && this.isFreeMarkerExpression(record.source, selectedWord.start, offset)) {
+      const variable = findSpecialVariable(selectedWord.name);
+      if (!variable) return undefined;
+      return new vscode.Hover(
+        new vscode.MarkdownString(`**special variable .${variable.name}**\n\n${variable.description}`),
+        wordRange
+      );
+    }
+
     const chains = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g;
     let chain;
     while ((chain = chains.exec(record.source)) !== null) {
@@ -959,15 +1192,73 @@ class TemplateWorkspaceIndex {
     return edit;
   }
 
-  builtinCompletions() {
+  // The type of the expression a built-in is applied to, named like the built-in categories.
+  builtinTargetType(record, target) {
+    if (/["']$/.test(target)) return 'string';
+    const literal = /(?:^|[^A-Za-z0-9_.?])(\d+(?:\.\d+)?|true|false)$/.exec(target);
+    if (literal) return literalType(literal[1]);
+
+    const chain = /(^|[^A-Za-z0-9_.?\])])((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)$/.exec(target);
+    if (!chain) return undefined;
+    const segments = chain[2].split('.');
+    if (segments.length > 1) {
+      const member = this.resolveNamespaceMember(record, segments, true);
+      return member && member.symbol.kind === 'variable' ? symbolType(member.symbol) : undefined;
+    }
+
+    const candidates = this.includedSymbols(record)
+      .filter(({ symbol }) => symbol.kind === 'variable' && symbol.name === segments[0]);
+    const declaredBefore = candidates
+      .filter((candidate) => candidate.record === record && candidate.symbol.offset < target.length);
+    const declaration = declaredBefore[declaredBefore.length - 1] || candidates[0];
+    return declaration && symbolType(declaration.symbol);
+  }
+
+  builtinCompletions(targetType) {
     return BUILTINS.map((builtin) => {
       const item = new vscode.CompletionItem(builtinSignature(builtin), vscode.CompletionItemKind.Function);
       item.detail = `${builtin.category} built-in`;
       item.documentation = new vscode.MarkdownString(builtin.description);
       item.filterText = builtin.name;
       item.insertText = builtin.name;
-      item.sortText = builtin.name;
+      item.sortText = `${builtin.category === targetType ? 0 : 1}_${builtin.name}`;
       if (builtin.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
+      return item;
+    });
+  }
+
+  directiveCompletions() {
+    return DIRECTIVES.map((directive) => {
+      const item = new vscode.CompletionItem(directive.name, vscode.CompletionItemKind.Keyword);
+      item.detail = directive.syntax;
+      item.documentation = new vscode.MarkdownString(directive.description);
+      if (directive.deprecated) item.tags = [vscode.CompletionItemTag.Deprecated];
+      return item;
+    });
+  }
+
+  // The names that an end tag at the end of the text can close, innermost block first.
+  closingTagCompletions(textBefore, kind, tagIsClosed) {
+    return templateBlocks(textBefore).unclosed
+      .filter((block) => block.kind === kind && !block.optional)
+      .reverse()
+      .map((block, depth) => {
+        const item = new vscode.CompletionItem(
+          block.name,
+          kind === 'directive' ? vscode.CompletionItemKind.Keyword : vscode.CompletionItemKind.Method
+        );
+        item.detail = `Close <${kind === 'directive' ? '#' : '@'}${block.name}>`;
+        item.insertText = tagIsClosed ? block.name : `${block.name}>`;
+        item.sortText = String(depth).padStart(4, '0');
+        return item;
+      });
+  }
+
+  specialVariableCompletions() {
+    return SPECIAL_VARIABLES.map((variable) => {
+      const item = new vscode.CompletionItem(variable.name, vscode.CompletionItemKind.Constant);
+      item.detail = 'special variable';
+      item.documentation = new vscode.MarkdownString(variable.description);
       return item;
     });
   }
@@ -979,7 +1270,20 @@ class TemplateWorkspaceIndex {
     const beforeCursor = record.source.slice(0, offset);
     const builtinStart = builtinNameStart(beforeCursor);
     if (builtinStart >= 0 && this.isFreeMarkerExpression(record.source, builtinStart, offset)) {
-      return this.builtinCompletions();
+      return this.builtinCompletions(this.builtinTargetType(record, beforeCursor.slice(0, builtinStart - 1)));
+    }
+    const tagStart = /<(\/?)([#@])([A-Za-z_][A-Za-z0-9_.-]*)?$/.exec(beforeCursor);
+    if (tagStart && tagStart[1]) {
+      return this.closingTagCompletions(
+        beforeCursor.slice(0, tagStart.index),
+        tagStart[2] === '#' ? 'directive' : 'macro',
+        record.source[offset] === '>'
+      );
+    }
+    if (tagStart && tagStart[2] === '#') return this.directiveCompletions();
+    const specialVariableStart = specialVariableNameStart(beforeCursor);
+    if (specialVariableStart >= 0 && this.isFreeMarkerExpression(record.source, specialVariableStart, offset)) {
+      return this.specialVariableCompletions();
     }
     const macroArguments = this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
@@ -1087,14 +1391,26 @@ function activate(context) {
   context.subscriptions.push(diagnostics);
   const validateDocument = (document) => {
     if (document.languageId !== 'freemarker') return;
-    const issues = validateTemplate(document.getText());
-    const entries = issues.map((issue) => new vscode.Diagnostic(
-      new vscode.Range(document.positionAt(issue.offset), document.positionAt(issue.offset + issue.length)),
-      issue.message,
-      vscode.DiagnosticSeverity.Error
-    ));
-    if (entries.length) diagnostics.set(document.uri, entries);
-    else diagnostics.delete(document.uri);
+    const text = document.getText();
+    const publish = (issues) => {
+      const entries = issues.map((issue) => new vscode.Diagnostic(
+        new vscode.Range(document.positionAt(issue.offset), document.positionAt(issue.offset + issue.length)),
+        issue.message,
+        issue.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error
+      ));
+      if (entries.length) diagnostics.set(document.uri, entries);
+      else diagnostics.delete(document.uri);
+    };
+    const issues = validateTemplate(text);
+    publish(issues);
+    // The checks against other templates have to wait until the workspace is indexed.
+    index.ready.then(() => {
+      if (document.getText() !== text) return;
+      publish([...issues, ...index.semanticIssues(index.currentRecord(document))]);
+    });
+  };
+  const validateOpenDocuments = () => {
+    for (const document of vscode.workspace.textDocuments) validateDocument(document);
   };
 
   context.subscriptions.push(
@@ -1119,7 +1435,22 @@ function activate(context) {
     }, '(', ','),
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position) => index.completions(document, position)
-    }, '.', '@', ' ', '?'),
+    }, '.', '@', ' ', '?', '#'),
+    vscode.languages.registerDocumentLinkProvider({ language: 'freemarker' }, {
+      provideDocumentLinks: async (document) => {
+        await index.ready;
+        return index.documentLinks(index.currentRecord(document), document);
+      }
+    }),
+    vscode.languages.registerWorkspaceSymbolProvider({
+      provideWorkspaceSymbols: (query) => index.workspaceSymbols(query)
+    }),
+    vscode.languages.registerFoldingRangeProvider({ language: 'freemarker' }, {
+      provideFoldingRanges: (document) => index.foldingRanges(document)
+    }),
+    vscode.languages.registerDocumentHighlightProvider({ language: 'freemarker' }, {
+      provideDocumentHighlights: (document, position) => index.documentHighlights(document, position)
+    }),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
       provideDocumentFormattingEdits: (document, options) => {
         const formatted = formatTemplate(document.getText(), options);
@@ -1145,16 +1476,19 @@ function activate(context) {
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri))
   );
 
-  for (const document of vscode.workspace.textDocuments) validateDocument(document);
+  validateOpenDocuments();
 
+  // A change to one template can add or remove problems in the templates that use it.
   const watcher = vscode.workspace.createFileSystemWatcher(templatePattern);
-  watcher.onDidCreate((uri) => {
-    vscode.workspace.fs.readFile(uri).then((bytes) => index.update(uri, Buffer.from(bytes).toString('utf8')), () => index.remove(uri));
+  const reindex = (uri) => vscode.workspace.fs.readFile(uri)
+    .then((bytes) => index.update(uri, Buffer.from(bytes).toString('utf8')), () => index.remove(uri))
+    .then(validateOpenDocuments);
+  watcher.onDidCreate(reindex);
+  watcher.onDidChange(reindex);
+  watcher.onDidDelete((uri) => {
+    index.remove(uri);
+    validateOpenDocuments();
   });
-  watcher.onDidChange((uri) => {
-    vscode.workspace.fs.readFile(uri).then((bytes) => index.update(uri, Buffer.from(bytes).toString('utf8')), () => index.remove(uri));
-  });
-  watcher.onDidDelete((uri) => index.remove(uri));
   context.subscriptions.push(watcher);
 }
 

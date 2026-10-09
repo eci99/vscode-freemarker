@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { parseTemplate } = require('../template-index');
+const { literalType, parseTemplate, symbolType } = require('../template-index');
 
 const parsed = parseTemplate([
   '<#-- <#macro hidden> -->',
@@ -71,5 +71,35 @@ assert.strictEqual(
   'cards'
 );
 assert.strictEqual(parsed.source[parsed.directives[0].endOffset - 1], '>');
+
+assert.strictEqual(literalType('"text"'), 'string');
+assert.strictEqual(literalType("r'C:\\temp'"), 'string');
+assert.strictEqual(literalType('"a" + name'), undefined);
+assert.strictEqual(literalType('"a"?length'), undefined);
+assert.strictEqual(literalType('-12.5'), 'number');
+assert.strictEqual(literalType('true'), 'boolean');
+assert.strictEqual(literalType('[1, [2, 3]]'), 'sequence');
+assert.strictEqual(literalType('[1, 2][0]'), undefined);
+assert.strictEqual(literalType('{"a": 1}'), 'hash');
+assert.strictEqual(literalType('user.name'), undefined);
+
+const typed = parseTemplate([
+  '<#assign title = "Home">',
+  '<#assign note>text</#assign>',
+  '<#assign config = {"size": 14}>',
+  '<#assign other = title>',
+  '<#list entries as entry></#list>'
+].join('\n'));
+assert.deepStrictEqual(
+  typed.symbols.map((symbol) => [symbol.name, symbolType(symbol)]),
+  [
+    ['title', 'string'],
+    ['note', 'string'],
+    ['config', 'hash'],
+    ['config.size', 'number'],
+    ['other', undefined],
+    ['entry', 'loop variable']
+  ]
+);
 
 console.log('Template parser tests passed.');
