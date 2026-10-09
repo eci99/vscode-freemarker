@@ -236,7 +236,7 @@ async function run() {
   assert.strictEqual(completions.find((item) => item.label === 'total').kind, vscode.CompletionItemKind.Function);
   assert.strictEqual(
     completions.find((item) => item.label === 'total').detail,
-    'function from cards.ftl'
+    'cards.ftl'
   );
   assert.strictEqual(
     completions.find((item) => item.label === 'total').documentation.value,

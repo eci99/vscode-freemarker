@@ -364,7 +364,12 @@ class TemplateWorkspaceIndex {
             : vscode.CompletionItemKind.Method;
       const item = new vscode.CompletionItem(symbol.name, kind);
       item.sortText = `${String(groupOrder[symbol.kind] ?? 4).padStart(2, '0')}_${symbol.name.toLowerCase()}`;
-      item.detail = `${symbol.kind} from ${path.basename(sourceRecord.uri.fsPath)}`;
+      const sourceName = path.basename(sourceRecord.uri.fsPath);
+      item.detail = symbol.kind === 'function' || symbol.kind === 'macro'
+        ? sourceName
+        : symbol.kind === 'variable' && symbol.declaration
+          ? `${symbol.declaration}  (${sourceName})`
+          : `${symbol.kind} from ${sourceName}`;
       if ((symbol.kind === 'function' || symbol.kind === 'macro') && symbol.parameters) {
         const parameterLines = symbol.parameters.map(({ name, defaultValue }) => {
           const parameter = `\`${name}\``;
