@@ -5,6 +5,13 @@
   "version": "0.1.0",
   "publisher": "local-dev",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eci99/vscode-freemarker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eci99/vscode-freemarker/issues"
+  },
   "main": "./extension.js",
   "engines": {
     "vscode": "^1.85.0"
