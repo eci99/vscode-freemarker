@@ -54,12 +54,6 @@
         "scopeName": "text.html.ftl",
         "path": "./syntaxes/freemarker.tmLanguage.json"
       }
-    ],
-    "snippets": [
-      {
-        "language": "freemarker",
-        "path": "./snippets/freemarker.json"
-      }
     ]
   }
 }

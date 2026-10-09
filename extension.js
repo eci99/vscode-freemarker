@@ -1,5 +1,6 @@
 const path = require('path');
 const vscode = require('vscode');
+const snippets = require('./snippets/freemarker.json');
 const { formatTemplate } = require('./formatter');
 const { parseTemplate } = require('./template-index');
 
@@ -171,6 +172,50 @@ class TemplateWorkspaceIndex {
       }
     }
     return declarations;
+  }
+
+  macroArgumentCompletions(record, source) {
+    const tagStart = source.lastIndexOf('<@');
+    if (tagStart < 0 || source[tagStart - 1] === '/' || source.lastIndexOf('>') > tagStart) return undefined;
+
+    const invocation = /^([A-Za-z_][A-Za-z0-9_.]*)([\s\S]*)$/.exec(source.slice(tagStart + 2));
+    if (!invocation || !/^\s/.test(invocation[2])) return undefined;
+
+    let quote = null;
+    for (let index = 0; index < invocation[2].length; index += 1) {
+      const character = invocation[2][index];
+      if (quote) {
+        if (character === quote && invocation[2][index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      }
+    }
+    if (quote) return undefined;
+
+    const macroPath = invocation[1].split('.');
+    const declaration = macroPath.length > 1
+      ? this.resolveNamespaceMember(record, macroPath)
+      : this.includedSymbols(record).find(({ symbol }) =>
+        symbol.kind === 'macro' && symbol.name === invocation[1]
+      );
+    if (!declaration || declaration.symbol.kind !== 'macro') return undefined;
+
+    const usedParameters = new Set();
+    const assignedParameter = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
+    let match;
+    while ((match = assignedParameter.exec(invocation[2])) !== null) usedParameters.add(match[1]);
+
+    return declaration.symbol.parameters
+      .filter(({ name }) => !usedParameters.has(name))
+      .map(({ name, defaultValue }) => {
+        const label = defaultValue === undefined ? `${name} (Required)` : `${name}=${defaultValue}`;
+        const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Property);
+        item.insertText = `${name}=`;
+        item.detail = `Parameter of ${declaration.symbol.name}`;
+        if (defaultValue !== undefined) item.documentation = new vscode.MarkdownString(`Default: \`${defaultValue}\``);
+        item.sortText = name.toLowerCase();
+        return item;
+      });
   }
 
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
@@ -364,6 +409,8 @@ class TemplateWorkspaceIndex {
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
+    const macroArguments = this.macroArgumentCompletions(record, beforeCursor);
+    if (macroArguments !== undefined) return macroArguments;
     const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 
@@ -376,13 +423,29 @@ class TemplateWorkspaceIndex {
       declarations = this.namespaceDeclarations(record, true);
     }
 
+    const wordPrefix = /[A-Za-z_][A-Za-z0-9_]*$/.exec(beforeCursor);
+    const snippetItems = wordPrefix
+      ? Object.entries(snippets)
+        .filter(([, snippet]) => snippet.prefix.toLowerCase().startsWith(wordPrefix[0].toLowerCase()))
+        .map(([name, snippet]) => {
+          const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Snippet);
+          item.detail = snippet.description;
+          item.filterText = snippet.prefix;
+          item.insertText = new vscode.SnippetString(Array.isArray(snippet.body)
+            ? snippet.body.join('\n')
+            : snippet.body);
+          item.sortText = `snippet_${snippet.prefix.toLowerCase()}`;
+          return item;
+        })
+      : [];
+
     const groupOrder = { namespace: 0, variable: 1, function: 2, macro: 3 };
     declarations.sort((left, right) => {
       const groupDifference = (groupOrder[left.symbol.kind] ?? 4) - (groupOrder[right.symbol.kind] ?? 4);
       return groupDifference || left.symbol.name.localeCompare(right.symbol.name);
     });
 
-    return declarations.map(({ symbol, record: sourceRecord }) => {
+    const symbolItems = declarations.map(({ symbol, record: sourceRecord }) => {
       const kind = symbol.kind === 'namespace'
         ? vscode.CompletionItemKind.Module
         : symbol.kind === 'variable'
@@ -416,7 +479,7 @@ class TemplateWorkspaceIndex {
         const parameterLines = symbol.parameters.map(({ name, defaultValue }) => {
           const parameter = `\`${name}\``;
           return defaultValue === undefined
-            ? `- ${parameter}`
+            ? `- ${parameter} (Required)`
             : `- ${parameter} = \`${defaultValue.replace(/`/g, '\\`')}\``;
         });
         const parameters = parameterLines.length > 0
@@ -429,6 +492,7 @@ class TemplateWorkspaceIndex {
       item.insertText = symbol.name;
       return item;
     });
+    return [...symbolItems, ...snippetItems];
   }
 }
 
@@ -445,7 +509,7 @@ function activate(context) {
     }),
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position) => index.completions(document, position)
-    }, '.', '@'),
+    }, '.', '@', ' '),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
       provideDocumentFormattingEdits: (document, options) => {
         const formatted = formatTemplate(document.getText(), options);

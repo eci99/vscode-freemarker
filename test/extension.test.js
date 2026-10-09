@@ -28,7 +28,7 @@ const files = new Map([
   ].join('\n')],
   ['/virtual/work/lib/cards.ftl', [
     '<#import "nested.ftl" as nested>',
-    '<#macro render>card</#macro>',
+    '<#macro render title className="button">card</#macro>',
     '<#macro _hidden>secret</#macro>',
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
@@ -106,7 +106,7 @@ const vscode = {
   Position,
   Range,
   Location,
-  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8 },
+  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
   },
@@ -114,6 +114,11 @@ const vscode = {
     constructor(label, kind) {
       this.label = label;
       this.kind = kind;
+    }
+  },
+  SnippetString: class {
+    constructor(value) {
+      this.value = value;
     }
   },
   MarkdownString: class {
@@ -147,8 +152,9 @@ const vscode = {
       providers.references = provider;
       return disposable;
     },
-    registerCompletionItemProvider: (_selector, provider) => {
+    registerCompletionItemProvider: (_selector, provider, ...triggerCharacters) => {
       providers.completion = provider;
+      providers.completionTriggerCharacters = triggerCharacters;
       return disposable;
     },
     registerDocumentFormattingEditProvider: (_selector, provider) => {
@@ -278,11 +284,11 @@ async function run() {
     'theme = "blue"',
     'total(items, precision=2, label="compact")',
     'publicHelper()',
-    'render()'
+    'render(title, className="button")'
   ]);
   assert.deepStrictEqual(
     [...completions].sort((left, right) => left.sortText.localeCompare(right.sortText)).map((item) => item.label),
-    ['nested', 'salutation = Hello World', 'theme = "blue"', 'total(items, precision=2, label="compact")', 'publicHelper()', 'render()']
+    ['nested', 'salutation = Hello World', 'theme = "blue"', 'total(items, precision=2, label="compact")', 'publicHelper()', 'render(title, className="button")']
   );
   assert(!completions.some((item) => item.label.startsWith('_')));
   assert.strictEqual(completions.find((item) => item.label === 'nested').kind, vscode.CompletionItemKind.Module);
@@ -300,11 +306,11 @@ async function run() {
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'total').documentation.value,
-    'function total\n\nParameter:\n\n- `items`\n- `precision` = `2`\n- `label` = `"compact"`'
+    'function total\n\nParameter:\n\n- `items` (Required)\n- `precision` = `2`\n- `label` = `"compact"`'
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'render').documentation.value,
-    'macro render\n\nParameter: none'
+    'macro render\n\nParameter:\n\n- `title` (Required)\n- `className` = `"button"`'
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'theme').documentation.value,
@@ -312,6 +318,32 @@ async function run() {
   );
   assert.strictEqual(completions.find((item) => item.insertText === 'theme').detail, 'cards.ftl');
   assert.strictEqual(completions.find((item) => item.insertText === 'render').kind, vscode.CompletionItemKind.Method);
+
+  const macroCallDocument = new Document(mainUri, `${mainText}\n<@cards.render `);
+  const macroArgumentCompletions = await providers.completion.provideCompletionItems(
+    macroCallDocument,
+    macroCallDocument.positionAt(macroCallDocument.getText().length)
+  );
+  assert.deepStrictEqual(macroArgumentCompletions.map((item) => item.label), ['title (Required)', 'className="button"']);
+  assert(!macroArgumentCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
+  assert.strictEqual(macroArgumentCompletions[0].insertText, 'title=');
+  assert.strictEqual(macroArgumentCompletions[0].kind, vscode.CompletionItemKind.Property);
+  assert.strictEqual(macroArgumentCompletions[1].documentation.value, 'Default: `"button"`');
+  const usedMacroArgumentDocument = new Document(mainUri, `${mainText}\n<@cards.render title="Hello" `);
+  const unusedMacroArgumentCompletions = await providers.completion.provideCompletionItems(
+    usedMacroArgumentDocument,
+    usedMacroArgumentDocument.positionAt(usedMacroArgumentDocument.getText().length)
+  );
+  assert.deepStrictEqual(unusedMacroArgumentCompletions.map((item) => item.label), ['className="button"']);
+  assert.strictEqual(unusedMacroArgumentCompletions[0].insertText, 'className=');
+  assert(providers.completionTriggerCharacters.includes(' '));
+
+  const snippetDocument = new Document(mainUri, `${mainText}\nass`);
+  const snippetCompletions = await providers.completion.provideCompletionItems(
+    snippetDocument,
+    snippetDocument.positionAt(snippetDocument.getText().length)
+  );
+  assert(snippetCompletions.some((item) => item.label === 'Assign variable'));
 
   const nestedDefinitionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.nested.'.length;
   const nestedDefinition = await providers.definition.provideDefinition(
