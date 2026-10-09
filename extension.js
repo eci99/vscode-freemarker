@@ -159,10 +159,11 @@ class TemplateWorkspaceIndex {
 
   namespaceDeclarations(record, includePrivate = false) {
     const declarations = this.includedSymbols(record)
-      .filter(({ symbol }) => includePrivate || !this.isPrivateName(symbol.name));
+      .filter(({ symbol }) => symbol.topLevel !== false
+        && (includePrivate || !this.isPrivateName(symbol.name)));
     for (const source of this.includedRecords(record)) {
       for (const directive of source.directives) {
-        if (directive.kind !== 'import' || !directive.alias) continue;
+        if (directive.kind !== 'import' || !directive.alias || directive.topLevel === false) continue;
         const imported = this.resolveTemplate(source, directive.path);
         if (imported && (includePrivate || !this.isPrivateName(directive.alias))) {
           declarations.push({
@@ -448,9 +449,19 @@ class TemplateWorkspaceIndex {
     const qualified = /\b((?:[A-Za-z_][A-Za-z0-9_]*\.)+)([A-Za-z_][A-Za-z0-9_]*)\b/g;
     let match;
     while ((match = qualified.exec(record.source)) !== null) {
+      const segments = `${match[1]}${match[2]}`.split('.');
+      let segmentStart = match.index;
+      for (let index = 0; index < segments.length - 1; index += 1) {
+        const segmentEnd = segmentStart + segments[index].length;
+        if (offset >= segmentStart && offset <= segmentEnd) {
+          const namespace = this.resolveNamespaceRecord(record, segments.slice(0, index + 1));
+          if (namespace) return new vscode.Location(namespace.uri, new vscode.Position(0, 0));
+        }
+        segmentStart = segmentEnd + 1;
+      }
+
       const memberOffset = match.index + match[0].length - match[2].length;
       if (offset < memberOffset || offset > memberOffset + match[2].length) continue;
-      const segments = `${match[1]}${match[2]}`.split('.');
       const localPath = segments.join('.');
       const localDeclaration = this.includedSymbols(record)
         .find(({ symbol }) => symbol.kind === 'variable' && symbol.name === localPath);

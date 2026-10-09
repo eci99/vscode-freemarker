@@ -30,12 +30,12 @@ const files = new Map([
   ['/virtual/work/lib/cards.ftl', [
     '<#import "nested.ftl" as nested>',
     '<#-- Renders a card with configurable styling.\n\nInternal implementation note. -->',
-    '<#macro render title className="button">card</#macro>',
+    '<#macro render title className="button"><#local macroOnly = "hidden"><#import "nested.ftl" as hiddenNamespace>card</#macro>',
     '<#macro _hidden>secret</#macro>',
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
     '<#-- Calculates a total from the supplied values. -->',
-    '<#function total items precision=2 label="compact">1</#function>',
+    '<#function total items precision=2 label="compact"><#local functionOnly = "hidden">1</#function>',
     '<#assign salutation>\n  Hello World\n</#assign> <#-- Greeting shown to the visitor. -->',
     '<#-- The selected theme color. -->',
     '<#assign theme = "blue">',
@@ -247,6 +247,14 @@ async function run() {
   assert.strictEqual(memberDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
   assert.strictEqual(memberDefinition.range.start.character, '<#macro '.length);
 
+  const namespaceOffset = mainText.indexOf('cards.render') + 1;
+  const namespaceDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, namespaceOffset)
+  );
+  assert.strictEqual(namespaceDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
+  assert.strictEqual(namespaceDefinition.range.line, 0);
+
   const namespaceHover = await providers.hover.provideHover(
     document,
     positionAt(mainText, mainText.indexOf('cards.render') + 1)
@@ -374,6 +382,7 @@ async function run() {
     'publicHelper()',
     'render(title, className="button")'
   ]);
+  assert(!completions.some((item) => item.label === 'macroOnly' || item.label === 'functionOnly'));
   assert.deepStrictEqual(
     [...completions].sort((left, right) => left.sortText.localeCompare(right.sortText)).map((item) => item.label),
     ['nested', 'salutation = Hello World', 'theme = "blue"', 'total(items, precision=2, label="compact")', 'publicHelper()', 'render(title, className="button")']
@@ -416,6 +425,18 @@ async function run() {
   assert.strictEqual(expressionCompletions.find((item) => item.insertText === 'total').kind, vscode.CompletionItemKind.Function);
   assert(expressionCompletions.some((item) => item.insertText === 'theme'));
   assert(expressionCompletions.some((item) => item.insertText === 'nested'));
+  assert(!expressionCompletions.some((item) =>
+    ['macroOnly', 'functionOnly', 'hiddenNamespace'].includes(item.label.split(/[ (]/)[0])
+  ));
+  const macroCompletionDocument = new Document(mainUri, `${mainText}\n<@cards.`);
+  const macroCompletions = await providers.completion.provideCompletionItems(
+    macroCompletionDocument,
+    macroCompletionDocument.positionAt(macroCompletionDocument.getText().length)
+  );
+  assert(macroCompletions.some((item) => item.label === 'render(title, className="button")'));
+  assert(!macroCompletions.some((item) =>
+    ['macroOnly', 'functionOnly', 'hiddenNamespace'].includes(item.label.split(/[ (]/)[0])
+  ));
   assert(!expressionCompletions.some((item) => item.kind === vscode.CompletionItemKind.Method));
   assert(!expressionCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
 

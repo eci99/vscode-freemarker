@@ -274,6 +274,30 @@ function parseTemplate(text) {
     directivePattern.lastIndex = end + 1;
   }
 
+  const scopeStack = [];
+  const scopeRanges = [];
+  const scopePattern = /<(\/?)#(macro|function)\b/g;
+  while ((match = scopePattern.exec(source)) !== null) {
+    if (match[1]) {
+      let scopeIndex = scopeStack.length - 1;
+      while (scopeIndex >= 0 && scopeStack[scopeIndex].kind !== match[2]) scopeIndex -= 1;
+      if (scopeIndex >= 0) {
+        const [scope] = scopeStack.splice(scopeIndex, 1);
+        scopeRanges.push({ start: scope.bodyStart, end: match.index });
+      }
+    } else {
+      const tagEnd = findTagEnd(source, match.index);
+      scopeStack.push({ kind: match[2], bodyStart: tagEnd < 0 ? source.length : tagEnd + 1 });
+    }
+  }
+  for (const scope of scopeStack) scopeRanges.push({ start: scope.bodyStart, end: source.length });
+  for (const symbol of symbols) {
+    symbol.topLevel = !scopeRanges.some(({ start, end }) => symbol.offset >= start && symbol.offset < end);
+  }
+  for (const directive of directives) {
+    directive.topLevel = !scopeRanges.some(({ start, end }) => directive.offset >= start && directive.offset < end);
+  }
+
   return { source, symbols, directives };
 }
 
