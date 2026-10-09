@@ -7,6 +7,9 @@ const parsed = parseTemplate([
   '<#macro card title width=2 label="wide card">',
   '<#-- Calculates the total value. -->',
   '<#function total items precision=2>',
+  '<#-- Heading for a page. -->',
+  '<#assign pageHeading = "Welcome">',
+  '<#assign inlineNote = "value"> <#-- Short inline description. -->',
   '<#assign heading = "Cards">',
   '<#assign greeting>\n  Hello World\n</#assign>',
   '<#assign config = {"editor": {"fontSize": 14}}>',
@@ -20,6 +23,8 @@ assert.deepStrictEqual(
   [
     ['card', 'macro'],
     ['total', 'function'],
+    ['pageHeading', 'variable'],
+    ['inlineNote', 'variable'],
     ['heading', 'variable'],
     ['greeting', 'variable'],
     ['config', 'variable'],
@@ -41,13 +46,15 @@ assert.strictEqual(parsed.symbols[0].declaration, '<#macro card title width=2 la
 assert.strictEqual(parsed.symbols[1].declaration, '<#function total items precision=2>');
 assert.strictEqual(parsed.symbols[0].documentation, 'Renders a reusable card.');
 assert.strictEqual(parsed.symbols[1].documentation, 'Calculates the total value.');
-assert.strictEqual(parsed.symbols[2].declaration, '<#assign heading = "Cards">');
-assert.strictEqual(parsed.symbols[2].value, '"Cards"');
-assert.strictEqual(parsed.symbols[3].declaration, '<#assign greeting>\n  Hello World\n</#assign>');
-assert.strictEqual(parsed.symbols[3].value, 'Hello World');
-assert.strictEqual(parsed.symbols[5].value, '{"fontSize": 14}');
-assert.strictEqual(parsed.symbols[6].value, '14');
-assert.strictEqual(parsed.symbols[7].declaration, '<#list entries as entry>');
+assert.strictEqual(parsed.symbols[2].documentation, 'Heading for a page.');
+assert.strictEqual(parsed.symbols[3].documentation, 'Short inline description.');
+assert.strictEqual(parsed.symbols[4].declaration, '<#assign heading = "Cards">');
+assert.strictEqual(parsed.symbols[4].value, '"Cards"');
+assert.strictEqual(parsed.symbols[5].declaration, '<#assign greeting>\n  Hello World\n</#assign>');
+assert.strictEqual(parsed.symbols[5].value, 'Hello World');
+assert.strictEqual(parsed.symbols[7].value, '{"fontSize": 14}');
+assert.strictEqual(parsed.symbols[8].value, '14');
+assert.strictEqual(parsed.symbols[9].declaration, '<#list entries as entry>');
 const selfClosingAssignment = parseTemplate('<#assign name2 = "test"/>');
 assert.strictEqual(selfClosingAssignment.symbols[0].value, '"test"');
 assert.deepStrictEqual(

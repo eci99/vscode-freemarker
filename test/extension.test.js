@@ -36,7 +36,8 @@ const files = new Map([
     '<#macro publicHelper><@_helper /></#macro>',
     '<#-- Calculates a total from the supplied values. -->',
     '<#function total items precision=2 label="compact">1</#function>',
-    '<#assign salutation>\n  Hello World\n</#assign>',
+    '<#assign salutation>\n  Hello World\n</#assign> <#-- Greeting shown to the visitor. -->',
+    '<#-- The selected theme color. -->',
     '<#assign theme = "blue">',
     '<#assign _internal = "secret">'
   ].join('\n')],
@@ -232,7 +233,14 @@ async function run() {
     positionAt(mainText, mainText.indexOf('cards.theme') + 'cards.'.length + 1)
   );
   assert(variableHover.contents[0].value.includes('variable theme'));
+  assert(variableHover.contents[0].value.includes('The selected theme color.'));
   assert(variableHover.contents[0].value.includes('Value: `"blue"`'));
+
+  const captureVariableHover = await providers.hover.provideHover(
+    document,
+    positionAt(mainText, mainText.indexOf('cards.salutation') + 'cards.'.length + 1)
+  );
+  assert(captureVariableHover.contents[0].value.includes('Greeting shown to the visitor.'));
 
   const functionHover = await providers.hover.provideHover(
     document,

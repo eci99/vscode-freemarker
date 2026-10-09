@@ -15,6 +15,7 @@ VS Code support for Apache FreeMarker templates (`.ftl`, `.ftlh`, and `.ftlx`).
 - Function arguments suggest in-scope variables and namespaces without snippets; documentation lists the full signature, highlights the current parameter, and substitutes values already entered at the call site
 - Go to Definition for imported namespace members, simple and capture-assigned variables, loop variables, nested hash fields, and included templates
 - Hover documentation for namespace aliases, variables, macros, and functions
+- The first paragraph of a comment immediately before or inline after a variable declaration is included in its hover
 - Find All References for variables and macros/functions across namespace imports and includes
 - Workspace indexing that updates as template files are opened, edited, created, or deleted
 - Optional `freemarker.templateRoots` workspace setting for template-loader roots

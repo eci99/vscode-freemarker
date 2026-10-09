@@ -22,6 +22,18 @@ function leadingCommentParagraph(text, declarationOffset) {
   return firstParagraph.replace(/[ \t]*\r?\n[ \t]*/g, ' ').trim() || undefined;
 }
 
+function trailingCommentParagraph(text, declarationEnd) {
+  const lineEndMatch = /\r?\n/.exec(text.slice(declarationEnd));
+  const lineEnd = lineEndMatch ? declarationEnd + lineEndMatch.index : text.length;
+  const lineTail = text.slice(declarationEnd, lineEnd);
+  const commentMatch = /^\s*<#--([\s\S]*?)-->/.exec(lineTail);
+  if (!commentMatch) return undefined;
+
+  const content = commentMatch[1].trim();
+  const firstParagraph = content.split(/\r?\n\s*\r?\n/)[0];
+  return firstParagraph.replace(/[ \t]*\r?\n[ \t]*/g, ' ').trim() || undefined;
+}
+
 function findTagEnd(text, start) {
   let quote = null;
   for (let index = start; index < text.length; index += 1) {
@@ -214,6 +226,8 @@ function parseTemplate(text) {
         offset: nameOffset,
         length: match[1].length,
         value,
+        documentation: leadingCommentParagraph(text, match.index)
+          || trailingCommentParagraph(text, declarationEnd + 1),
         declaration: declarationEnd < 0
           ? source.slice(match.index).trim()
           : source.slice(match.index, declarationEnd + 1).trim()
