@@ -8,9 +8,15 @@ const files = new Map([
     '<#import "../lib/cards.ftl" as _privateCards>',
     '<#include "shared.ftl">',
     '<#assign pageTitle = "Home">',
+    '<#assign greeting>\n  Hello World\n</#assign>',
+    '<#assign settings = {"editor": {"fontSize": 14}}>',
     '${pageTitle}',
+    '${greeting}',
+    '${settings.editor.fontSize}',
+    '${settings.editor.fontSize}',
     '<#list products as product>${product}</#list>',
     '<@cards.render>card</@cards.render>',
+    '${cards.salutation}',
     '<@toolkit.nested.render />',
     '<@toolkit.included />',
     '<@toolkit._privateNested.render />',
@@ -27,6 +33,7 @@ const files = new Map([
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
     '<#function total items precision=2 label="compact">1</#function>',
+    '<#assign salutation>\n  Hello World\n</#assign>',
     '<#assign theme = "blue">',
     '<#assign _internal = "secret">'
   ].join('\n')],
@@ -207,6 +214,13 @@ async function run() {
   assert.strictEqual(variableDefinition.uri.fsPath, mainUri.fsPath);
   assert.strictEqual(variableDefinition.range.start.character, '<#assign '.length);
 
+  const greetingOffset = mainText.indexOf('greeting}', 1) + 1;
+  const greetingDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, greetingOffset)
+  );
+  assert.strictEqual(greetingDefinition.uri.fsPath, mainUri.fsPath);
+
   const loopVariableOffset = mainText.indexOf('product}</') + 1;
   const loopVariableDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, loopVariableOffset));
   assert.strictEqual(loopVariableDefinition.uri.fsPath, mainUri.fsPath);
@@ -214,6 +228,28 @@ async function run() {
     loopVariableDefinition.range.start.line,
     positionAt(mainText, mainText.indexOf('<#list products')).line
   );
+
+  const nestedHashOffset = mainText.indexOf('settings.editor.fontSize') + 'settings.editor.'.length;
+  const nestedHashDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, nestedHashOffset)
+  );
+  assert.strictEqual(nestedHashDefinition.uri.fsPath, mainUri.fsPath);
+  assert.deepStrictEqual(
+    nestedHashDefinition.range.start,
+    positionAt(mainText, mainText.indexOf('fontSize'))
+  );
+  const nestedHashCompletions = await providers.completion.provideCompletionItems(
+    document,
+    positionAt(mainText, mainText.indexOf('settings.editor.fontSize') + 'settings.editor.'.length)
+  );
+  assert(nestedHashCompletions.some((item) => item.label === 'fontSize = 14'));
+  const nestedHashReferences = await providers.references.provideReferences(
+    document,
+    nestedHashDefinition.range.start,
+    { includeDeclaration: false }
+  );
+  assert.strictEqual(nestedHashReferences.length, 2);
 
   const namespaceVariableOffset = mainText.indexOf('cards.theme') + 'cards.'.length;
   const namespaceVariableDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, namespaceVariableOffset));
@@ -223,34 +259,59 @@ async function run() {
     positionAt(files.get('/virtual/work/lib/cards.ftl'), files.get('/virtual/work/lib/cards.ftl').indexOf('theme =')).line
   );
 
+  const captureVariableOffset = mainText.indexOf('cards.salutation') + 'cards.'.length;
+  const captureVariableDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, captureVariableOffset)
+  );
+  assert.strictEqual(captureVariableDefinition.uri.fsPath, '/virtual/work/lib/cards.ftl');
+  assert.strictEqual(
+    captureVariableDefinition.range.start.character,
+    '<#assign '.length
+  );
+
   const completionOffset = mainText.indexOf('<@cards.render') + '<@cards.'.length;
   const completions = await providers.completion.provideCompletionItems(document, positionAt(mainText, completionOffset));
-  assert.deepStrictEqual(completions.map((item) => item.label), ['nested', 'theme', 'total', 'publicHelper', 'render']);
+  assert.deepStrictEqual(completions.map((item) => item.label), [
+    'nested',
+    'salutation = Hello World',
+    'theme = "blue"',
+    'total(items, precision=2, label="compact")',
+    'publicHelper()',
+    'render()'
+  ]);
   assert.deepStrictEqual(
     [...completions].sort((left, right) => left.sortText.localeCompare(right.sortText)).map((item) => item.label),
-    ['nested', 'theme', 'total', 'publicHelper', 'render']
+    ['nested', 'salutation = Hello World', 'theme = "blue"', 'total(items, precision=2, label="compact")', 'publicHelper()', 'render()']
   );
   assert(!completions.some((item) => item.label.startsWith('_')));
   assert.strictEqual(completions.find((item) => item.label === 'nested').kind, vscode.CompletionItemKind.Module);
-  assert.strictEqual(completions.find((item) => item.label === 'theme').kind, vscode.CompletionItemKind.Variable);
-  assert.strictEqual(completions.find((item) => item.label === 'total').kind, vscode.CompletionItemKind.Function);
+  assert.strictEqual(completions.find((item) => item.insertText === 'theme').kind, vscode.CompletionItemKind.Variable);
+  assert.strictEqual(completions.find((item) => item.insertText === 'salutation').kind, vscode.CompletionItemKind.Variable);
+  assert.strictEqual(completions.find((item) => item.insertText === 'salutation').detail, 'cards.ftl');
   assert.strictEqual(
-    completions.find((item) => item.label === 'total').detail,
+    completions.find((item) => item.insertText === 'salutation').documentation.value,
+    'variable salutation\n\nDefinition\n\n```ftl\n<#assign salutation>\n  Hello World\n</#assign>\n```'
+  );
+  assert.strictEqual(completions.find((item) => item.insertText === 'total').kind, vscode.CompletionItemKind.Function);
+  assert.strictEqual(
+    completions.find((item) => item.insertText === 'total').detail,
     'cards.ftl'
   );
   assert.strictEqual(
-    completions.find((item) => item.label === 'total').documentation.value,
+    completions.find((item) => item.insertText === 'total').documentation.value,
     'function total\n\nParameter:\n\n- `items`\n- `precision` = `2`\n- `label` = `"compact"`'
   );
   assert.strictEqual(
-    completions.find((item) => item.label === 'render').documentation.value,
+    completions.find((item) => item.insertText === 'render').documentation.value,
     'macro render\n\nParameter: none'
   );
   assert.strictEqual(
-    completions.find((item) => item.label === 'theme').documentation.value,
-    'Definition\n\n```ftl\n<#assign theme = "blue">\n```'
+    completions.find((item) => item.insertText === 'theme').documentation.value,
+    'variable theme\n\nDefinition\n\n```ftl\n<#assign theme = "blue">\n```'
   );
-  assert.strictEqual(completions.find((item) => item.label === 'render').kind, vscode.CompletionItemKind.Method);
+  assert.strictEqual(completions.find((item) => item.insertText === 'theme').detail, 'cards.ftl');
+  assert.strictEqual(completions.find((item) => item.insertText === 'render').kind, vscode.CompletionItemKind.Method);
 
   const nestedDefinitionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.nested.'.length;
   const nestedDefinition = await providers.definition.provideDefinition(
@@ -258,6 +319,17 @@ async function run() {
     positionAt(mainText, nestedDefinitionOffset)
   );
   assert.strictEqual(nestedDefinition.uri.fsPath, '/virtual/work/lib/nested.ftl');
+
+  const nestedVariableOffset = mainText.indexOf('toolkit.nested.label') + 'toolkit.nested.'.length;
+  const nestedVariableDefinition = await providers.definition.provideDefinition(
+    document,
+    positionAt(mainText, nestedVariableOffset)
+  );
+  assert.strictEqual(nestedVariableDefinition.uri.fsPath, '/virtual/work/lib/nested.ftl');
+  assert.strictEqual(
+    nestedVariableDefinition.range.start.character,
+    '<#assign '.length
+  );
 
   const includedDefinitionOffset = mainText.indexOf('toolkit.included') + 'toolkit.'.length;
   const includedDefinition = await providers.definition.provideDefinition(
@@ -271,15 +343,15 @@ async function run() {
     document,
     positionAt(mainText, nestedCompletionOffset)
   );
-  assert(nestedCompletions.some((item) => item.label === 'render'));
-  assert(nestedCompletions.some((item) => item.label === 'label'));
+  assert(nestedCompletions.some((item) => item.label === 'render()'));
+  assert(nestedCompletions.some((item) => item.label === 'label = "Nested"'));
 
   const toolkitCompletionOffset = mainText.indexOf('toolkit.nested.render') + 'toolkit.'.length;
   const toolkitCompletions = await providers.completion.provideCompletionItems(
     document,
     positionAt(mainText, toolkitCompletionOffset)
   );
-  assert(toolkitCompletions.some((item) => item.label === 'included'));
+  assert(toolkitCompletions.some((item) => item.label === 'included()'));
   assert(toolkitCompletions.some((item) => item.label === 'nested'));
   assert(!toolkitCompletions.some((item) => item.label === '_privateNested'));
 

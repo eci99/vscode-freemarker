@@ -127,10 +127,32 @@ class TemplateWorkspaceIndex {
 
   resolveNamespaceMember(record, segments) {
     if (segments.length < 2) return undefined;
+    const localPath = segments.join('.');
+    const localMember = this.includedSymbols(record)
+      .find(({ symbol }) => symbol.kind === 'variable' && symbol.name === localPath);
+    if (localMember) return localMember;
+
     const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1));
     if (!namespace) return undefined;
     const member = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === segments[segments.length - 1]);
     return member && !this.isPrivateName(member.symbol.name) ? member : undefined;
+  }
+
+  nestedVariableDeclarations(record, pathPrefix) {
+    const prefix = `${pathPrefix}.`;
+    const declarations = new Map();
+    for (const declaration of this.includedSymbols(record)) {
+      const { symbol } = declaration;
+      if (symbol.kind !== 'variable' || !symbol.name.startsWith(prefix)) continue;
+      const childPath = symbol.name.slice(prefix.length);
+      const childName = childPath.split('.')[0];
+      if (!childName || declarations.has(childName)) continue;
+      declarations.set(childName, {
+        ...declaration,
+        symbol: { ...symbol, name: childName }
+      });
+    }
+    return [...declarations.values()];
   }
 
   namespaceDeclarations(record, includePrivate = false) {
@@ -218,6 +240,10 @@ class TemplateWorkspaceIndex {
       const memberOffset = match.index + match[0].length - match[2].length;
       if (offset < memberOffset || offset > memberOffset + match[2].length) continue;
       const segments = `${match[1]}${match[2]}`.split('.');
+      const localPath = segments.join('.');
+      const localDeclaration = this.includedSymbols(record)
+        .find(({ symbol }) => symbol.kind === 'variable' && symbol.name === localPath);
+      if (localDeclaration) return this.definitionLocation(localDeclaration.record, localDeclaration.symbol);
       const declaration = this.resolveNamespaceMember(record, segments);
       if (declaration) return this.definitionLocation(declaration.record, declaration.symbol);
     }
@@ -298,8 +324,9 @@ class TemplateWorkspaceIndex {
       const qualified = /\b((?:[A-Za-z_][A-Za-z0-9_]*\.)+)([A-Za-z_][A-Za-z0-9_]*)\b/g;
       let match;
       while ((match = qualified.exec(record.source)) !== null) {
-        if (match[2] !== target.symbol.name) continue;
         const segments = `${match[1]}${match[2]}`.split('.');
+        const fullPath = segments.join('.');
+        if (match[2] !== target.symbol.name && fullPath !== target.symbol.name) continue;
         const member = this.resolveNamespaceMember(record, segments);
         if (!member) continue;
         if (member.symbol.offset !== targetOffset || this.key(member.record.uri) !== targetKey) continue;
@@ -342,8 +369,9 @@ class TemplateWorkspaceIndex {
 
     if (namespaceMatch) {
       const imported = this.resolveNamespaceRecord(record, namespaceMatch[1].split('.'));
-      if (!imported) return [];
-      declarations = this.namespaceDeclarations(imported);
+      declarations = imported
+        ? this.namespaceDeclarations(imported)
+        : this.nestedVariableDeclarations(record, namespaceMatch[1]);
     } else if (/<@([A-Za-z_][A-Za-z0-9_]*)?$/.test(beforeCursor)) {
       declarations = this.namespaceDeclarations(record, true);
     }
@@ -362,13 +390,27 @@ class TemplateWorkspaceIndex {
           : symbol.kind === 'function'
             ? vscode.CompletionItemKind.Function
             : vscode.CompletionItemKind.Method;
-      const item = new vscode.CompletionItem(symbol.name, kind);
+      const isCallable = symbol.kind === 'function' || symbol.kind === 'macro';
+      const variableValue = typeof symbol.value === 'string'
+        ? symbol.value.replace(/\s+/g, ' ').trim()
+        : undefined;
+      const shortVariableValue = variableValue && variableValue.length > 60
+        ? `${variableValue.slice(0, 57)}...`
+        : variableValue;
+      const signature = isCallable
+        ? `${symbol.name}(${(symbol.parameters || []).map(({ name, defaultValue }) =>
+          defaultValue === undefined ? name : `${name}=${defaultValue}`
+        ).join(', ')})`
+        : symbol.kind === 'variable' && shortVariableValue !== undefined
+          ? `${symbol.name} = ${shortVariableValue}`
+          : symbol.name;
+      const item = new vscode.CompletionItem(signature, kind);
       item.sortText = `${String(groupOrder[symbol.kind] ?? 4).padStart(2, '0')}_${symbol.name.toLowerCase()}`;
       const sourceName = path.basename(sourceRecord.uri.fsPath);
       item.detail = symbol.kind === 'function' || symbol.kind === 'macro'
         ? sourceName
         : symbol.kind === 'variable' && symbol.declaration
-          ? `${symbol.declaration}  (${sourceName})`
+          ? sourceName
           : `${symbol.kind} from ${sourceName}`;
       if ((symbol.kind === 'function' || symbol.kind === 'macro') && symbol.parameters) {
         const parameterLines = symbol.parameters.map(({ name, defaultValue }) => {
@@ -382,7 +424,7 @@ class TemplateWorkspaceIndex {
           : 'Parameter: none';
         item.documentation = new vscode.MarkdownString(`${symbol.kind} ${symbol.name}\n\n${parameters}`);
       } else if (symbol.kind === 'variable' && symbol.declaration) {
-        item.documentation = new vscode.MarkdownString(`Definition\n\n\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
+        item.documentation = new vscode.MarkdownString(`variable ${symbol.name}\n\nDefinition\n\n\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
       }
       item.insertText = symbol.name;
       return item;

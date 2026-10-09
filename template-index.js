@@ -19,6 +19,74 @@ function findTagEnd(text, start) {
   return -1;
 }
 
+function matchingBrace(text, start) {
+  let depth = 0;
+  let quote = null;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '{') depth += 1;
+    else if (character === '}' && --depth === 0) return index;
+  }
+  return -1;
+}
+
+function topLevelSeparator(text, start, end, separator) {
+  let depth = 0;
+  let quote = null;
+  for (let index = start; index < end; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && text[index - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '{' || character === '[' || character === '(') depth += 1;
+    else if (character === '}' || character === ']' || character === ')') depth -= 1;
+    else if (character === separator && depth === 0) return index;
+  }
+  return -1;
+}
+
+function parseHashMembers(source, objectStart, parentName, declaration, symbols) {
+  const objectEnd = matchingBrace(source, objectStart);
+  if (objectEnd < 0) return;
+
+  let entryStart = objectStart + 1;
+  while (entryStart < objectEnd) {
+    const entryEnd = topLevelSeparator(source, entryStart, objectEnd, ',');
+    const end = entryEnd < 0 ? objectEnd : entryEnd;
+    const colon = topLevelSeparator(source, entryStart, end, ':');
+    if (colon >= 0) {
+      const keyText = source.slice(entryStart, colon);
+      const keyMatch = /^\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$/.exec(keyText);
+      if (keyMatch) {
+        const keyOffset = entryStart + keyText.indexOf(keyMatch[2]);
+        const name = `${parentName}.${keyMatch[2]}`;
+        symbols.push({
+          name,
+          kind: 'variable',
+          offset: keyOffset,
+          length: keyMatch[2].length,
+          declaration,
+          value: source.slice(colon + 1, end).trim()
+        });
+
+        let valueStart = colon + 1;
+        while (/\s/.test(source[valueStart] || '')) valueStart += 1;
+        if (source[valueStart] === '{') {
+          parseHashMembers(source, valueStart, name, declaration, symbols);
+        }
+      }
+    }
+    entryStart = end + 1;
+  }
+}
+
 function splitParameters(text) {
   const tokens = [];
   let tokenStart = -1;
@@ -95,7 +163,7 @@ function parseTemplate(text) {
   }
 
   const variablePatterns = [
-    /<#(?:assign|local|global)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g,
+    /<#(?:assign|local|global)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|>)/g,
     /<#list\b[^>]*?\bas\s+([A-Za-z_][A-Za-z0-9_]*)\b/g,
     /<#items\b[^>]*?\bas\s+([A-Za-z_][A-Za-z0-9_]*)\b/g
   ];
@@ -103,13 +171,42 @@ function parseTemplate(text) {
     while ((match = pattern.exec(source)) !== null) {
       const nameOffset = match.index + match[0].lastIndexOf(match[1]);
       const tagEnd = findTagEnd(source, match.index);
+      const tagText = tagEnd < 0 ? source.slice(match.index) : source.slice(match.index, tagEnd + 1);
+      const captureAssign = tagText.startsWith('<#assign') && !tagText.includes('=');
+      let declarationEnd = tagEnd;
+      let value;
+      if (captureAssign) {
+        const closingTag = /<\/\#assign\s*>/g;
+        closingTag.lastIndex = tagEnd + 1;
+        const closingMatch = closingTag.exec(source);
+        if (closingMatch) {
+          declarationEnd = closingMatch.index + closingMatch[0].length - 1;
+          value = source.slice(tagEnd + 1, closingMatch.index).trim();
+        }
+      }
+      const equalsOffset = source.indexOf('=', nameOffset + match[1].length);
+      const hasAssignmentValue = equalsOffset >= 0 && equalsOffset < tagEnd;
+      if (!captureAssign && hasAssignmentValue) {
+        value = source.slice(equalsOffset + 1, tagEnd).replace(/\/\s*$/, '').trim();
+      }
       symbols.push({
         name: match[1],
         kind: 'variable',
         offset: nameOffset,
         length: match[1].length,
-        declaration: tagEnd < 0 ? source.slice(match.index).trim() : source.slice(match.index, tagEnd + 1).trim()
+        value,
+        declaration: declarationEnd < 0
+          ? source.slice(match.index).trim()
+          : source.slice(match.index, declarationEnd + 1).trim()
       });
+      if (hasAssignmentValue) {
+        const declaration = source.slice(match.index, tagEnd + 1).trim();
+        let hashStart = equalsOffset + 1;
+        while (/\s/.test(source[hashStart] || '')) hashStart += 1;
+        if (source[hashStart] === '{') {
+          parseHashMembers(source, hashStart, match[1], declaration, symbols);
+        }
+      }
     }
   }
 
