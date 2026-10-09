@@ -360,6 +360,29 @@ class TemplateWorkspaceIndex {
     });
   }
 
+  isInterpolationContext(source, offset) {
+    const beforeCursor = source.slice(0, offset);
+    const openingOffset = Math.max(beforeCursor.lastIndexOf('${'), beforeCursor.lastIndexOf('#{'));
+    if (openingOffset < 0) return false;
+
+    let quote = null;
+    let nesting = 0;
+    for (let index = openingOffset + 2; index < beforeCursor.length; index += 1) {
+      const character = beforeCursor[index];
+      if (quote) {
+        if (character === quote && beforeCursor[index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '{') {
+        nesting += 1;
+      } else if (character === '}') {
+        if (nesting === 0) return false;
+        nesting -= 1;
+      }
+    }
+    return quote === null;
+  }
+
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
     const openings = ['${', '#{', '<#', '<@', '</@'];
     let openingOffset = -1;
@@ -555,6 +578,7 @@ class TemplateWorkspaceIndex {
     if (macroArguments !== undefined) return macroArguments;
     const functionArguments = this.functionArgumentCompletions(record, beforeCursor);
     if (functionArguments !== undefined) return functionArguments;
+    const interpolationContext = this.isInterpolationContext(record.source, offset);
     const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 
@@ -565,10 +589,12 @@ class TemplateWorkspaceIndex {
         : this.nestedVariableDeclarations(record, namespaceMatch[1]);
     } else if (/<@([A-Za-z_][A-Za-z0-9_]*)?$/.test(beforeCursor)) {
       declarations = this.namespaceDeclarations(record, true);
+    } else if (interpolationContext) {
+      declarations = this.namespaceDeclarations(record, true);
     }
 
     const wordPrefix = /[A-Za-z_][A-Za-z0-9_]*$/.exec(beforeCursor);
-    const snippetItems = wordPrefix
+    const snippetItems = wordPrefix && !interpolationContext
       ? Object.entries(snippets)
         .filter(([, snippet]) => snippet.prefix.toLowerCase().startsWith(wordPrefix[0].toLowerCase()))
         .map(([name, snippet]) => {
@@ -582,6 +608,12 @@ class TemplateWorkspaceIndex {
           return item;
         })
       : [];
+
+    if (interpolationContext) {
+      declarations = declarations.filter(({ symbol }) =>
+        symbol.kind === 'namespace' || symbol.kind === 'variable' || symbol.kind === 'function'
+      );
+    }
 
     const groupOrder = { namespace: 0, variable: 1, function: 2, macro: 3 };
     declarations.sort((left, right) => {
@@ -629,7 +661,8 @@ class TemplateWorkspaceIndex {
         const parameters = parameterLines.length > 0
           ? `Parameter:\n\n${parameterLines.join('\n')}`
           : 'Parameter: none';
-        item.documentation = new vscode.MarkdownString(`${symbol.kind} ${symbol.name}\n\n${parameters}`);
+        const description = symbol.documentation ? `${symbol.documentation}\n\n` : '';
+        item.documentation = new vscode.MarkdownString(`${symbol.kind} ${symbol.name}\n\n${description}${parameters}`);
       } else if (symbol.kind === 'variable' && symbol.declaration) {
         item.documentation = new vscode.MarkdownString(`variable ${symbol.name}\n\nDefinition\n\n\`\`\`ftl\n${symbol.declaration}\n\`\`\``);
       }

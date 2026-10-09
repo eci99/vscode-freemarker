@@ -4,6 +4,24 @@ function withoutComments(text) {
   );
 }
 
+function leadingCommentParagraph(text, declarationOffset) {
+  const commentPattern = /<#--([\s\S]*?)-->/g;
+  let precedingComment;
+  let match;
+  while ((match = commentPattern.exec(text)) !== null) {
+    if (match.index + match[0].length > declarationOffset) break;
+    precedingComment = match;
+  }
+  if (!precedingComment) return undefined;
+
+  const commentEnd = precedingComment.index + precedingComment[0].length;
+  if (text.slice(commentEnd, declarationOffset).trim()) return undefined;
+
+  const content = precedingComment[1].trim();
+  const firstParagraph = content.split(/\r?\n\s*\r?\n/)[0];
+  return firstParagraph.replace(/[ \t]*\r?\n[ \t]*/g, ' ').trim() || undefined;
+}
+
 function findTagEnd(text, start) {
   let quote = null;
   for (let index = start; index < text.length; index += 1) {
@@ -156,6 +174,7 @@ function parseTemplate(text) {
       offset: nameOffset,
       length: match[2].length,
       parameters: splitParameters(parameterSource),
+      documentation: leadingCommentParagraph(text, match.index),
       declaration: tagEnd < 0
         ? source.slice(match.index).trim()
         : source.slice(match.index, tagEnd + 1).trim()

@@ -28,10 +28,12 @@ const files = new Map([
   ].join('\n')],
   ['/virtual/work/lib/cards.ftl', [
     '<#import "nested.ftl" as nested>',
+    '<#-- Renders a card with configurable styling.\n\nInternal implementation note. -->',
     '<#macro render title className="button">card</#macro>',
     '<#macro _hidden>secret</#macro>',
     '<#macro _helper><#return></#macro>',
     '<#macro publicHelper><@_helper /></#macro>',
+    '<#-- Calculates a total from the supplied values. -->',
     '<#function total items precision=2 label="compact">1</#function>',
     '<#assign salutation>\n  Hello World\n</#assign>',
     '<#assign theme = "blue">',
@@ -107,7 +109,7 @@ const vscode = {
   Position,
   Range,
   Location,
-  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9 },
+  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Snippet: 14 },
   TextEdit: {
     replace: (range, newText) => ({ range, newText })
   },
@@ -307,11 +309,11 @@ async function run() {
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'total').documentation.value,
-    'function total\n\nParameter:\n\n- `items` (Required)\n- `precision` = `2`\n- `label` = `"compact"`'
+    'function total\n\nCalculates a total from the supplied values.\n\nParameter:\n\n- `items` (Required)\n- `precision` = `2`\n- `label` = `"compact"`'
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'render').documentation.value,
-    'macro render\n\nParameter:\n\n- `title` (Required)\n- `className` = `"button"`'
+    'macro render\n\nRenders a card with configurable styling.\n\nParameter:\n\n- `title` (Required)\n- `className` = `"button"`'
   );
   assert.strictEqual(
     completions.find((item) => item.insertText === 'theme').documentation.value,
@@ -327,6 +329,20 @@ async function run() {
   );
   assert(expressionCompletions.some((item) => item.insertText === 'total'));
   assert.strictEqual(expressionCompletions.find((item) => item.insertText === 'total').kind, vscode.CompletionItemKind.Function);
+  assert(expressionCompletions.some((item) => item.insertText === 'theme'));
+  assert(expressionCompletions.some((item) => item.insertText === 'nested'));
+  assert(!expressionCompletions.some((item) => item.kind === vscode.CompletionItemKind.Method));
+  assert(!expressionCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
+
+  const interpolationRootDocument = new Document(mainUri, `${mainText}\n\${pa`);
+  const interpolationRootCompletions = await providers.completion.provideCompletionItems(
+    interpolationRootDocument,
+    interpolationRootDocument.positionAt(interpolationRootDocument.getText().length)
+  );
+  assert(interpolationRootCompletions.some((item) => item.insertText === 'pageTitle'));
+  assert(interpolationRootCompletions.some((item) => item.insertText === 'cards'));
+  assert(!interpolationRootCompletions.some((item) => item.kind === vscode.CompletionItemKind.Method));
+  assert(!interpolationRootCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
 
   const nestedExpressionCompletionDocument = new Document(mainUri, `${mainText}\n\${toolkit.nested.`);
   const nestedExpressionCompletions = await providers.completion.provideCompletionItems(

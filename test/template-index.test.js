@@ -3,7 +3,9 @@ const { parseTemplate } = require('../template-index');
 
 const parsed = parseTemplate([
   '<#-- <#macro hidden> -->',
+  '<#-- Renders a reusable card.\n\nAdditional implementation notes. -->',
   '<#macro card title width=2 label="wide card">',
+  '<#-- Calculates the total value. -->',
   '<#function total items precision=2>',
   '<#assign heading = "Cards">',
   '<#assign greeting>\n  Hello World\n</#assign>',
@@ -37,6 +39,8 @@ assert.deepStrictEqual(parsed.symbols[1].parameters, [
 ]);
 assert.strictEqual(parsed.symbols[0].declaration, '<#macro card title width=2 label="wide card">');
 assert.strictEqual(parsed.symbols[1].declaration, '<#function total items precision=2>');
+assert.strictEqual(parsed.symbols[0].documentation, 'Renders a reusable card.');
+assert.strictEqual(parsed.symbols[1].documentation, 'Calculates the total value.');
 assert.strictEqual(parsed.symbols[2].declaration, '<#assign heading = "Cards">');
 assert.strictEqual(parsed.symbols[2].value, '"Cards"');
 assert.strictEqual(parsed.symbols[3].declaration, '<#assign greeting>\n  Hello World\n</#assign>');
