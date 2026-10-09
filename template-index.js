@@ -15,7 +15,7 @@ function leadingCommentParagraph(text, declarationOffset) {
   if (!precedingComment) return undefined;
 
   const commentEnd = precedingComment.index + precedingComment[0].length;
-  if (text.slice(commentEnd, declarationOffset).trim()) return undefined;
+  if (!/^[ \t]*\r?\n[ \t]*$/.test(text.slice(commentEnd, declarationOffset))) return undefined;
 
   const content = precedingComment[1].trim();
   const firstParagraph = content.split(/\r?\n\s*\r?\n/)[0];

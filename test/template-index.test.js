@@ -57,6 +57,8 @@ assert.strictEqual(parsed.symbols[8].value, '14');
 assert.strictEqual(parsed.symbols[9].declaration, '<#list entries as entry>');
 const selfClosingAssignment = parseTemplate('<#assign name2 = "test"/>');
 assert.strictEqual(selfClosingAssignment.symbols[0].value, '"test"');
+const separatedComment = parseTemplate('<#-- Not directly attached. -->\n\n<#assign detached = true>');
+assert.strictEqual(separatedComment.symbols[0].documentation, undefined);
 assert.deepStrictEqual(
   parsed.directives.map(({ kind, path, alias }) => [kind, path, alias]),
   [
