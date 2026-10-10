@@ -5,3 +5,4 @@
 test/**
 **/*.vsix
 images/*.svg
+images/icon-small.png
