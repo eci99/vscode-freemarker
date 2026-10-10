@@ -3,7 +3,7 @@
   "displayName": "FreeMarker IntelliSense",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
   "version": "0.1.0",
-  "publisher": "local-dev",
+  "publisher": "eci99",
   "license": "MIT",
   "repository": {
     "type": "git",
