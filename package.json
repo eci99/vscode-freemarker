@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "eci99",
   "license": "MIT",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/eci99/vscode-freemarker.git"
