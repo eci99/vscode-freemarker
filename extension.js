@@ -17,6 +17,66 @@ const { templateBlocks, validateTemplate } = require('./validator');
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 // For text that has already been rewritten to the default syntax.
 const defaultSyntax = { tagSyntax: 'angleBracket', interpolationSyntax: 'legacy' };
+const htmlVoidElements = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+  'param', 'source', 'track', 'wbr'
+]);
+const autoCloseDirectives = new Set([
+  'if', 'list', 'foreach', 'switch', 'macro', 'function', 'attempt', 'compress',
+  'noparse', 'outputformat', 'autoesc', 'noautoesc', 'escape', 'transform',
+  'items', 'sep', 'assign', 'local', 'global'
+]);
+
+function closingTextAfterTypedTag(document, change) {
+  if (change.rangeLength !== 0 || !['>', ']'].includes(change.text)) return undefined;
+  const source = document.getText();
+  const cursorOffset = change.rangeOffset + change.text.length;
+  const angleStart = source.lastIndexOf('<', cursorOffset - 1);
+  const squareStart = Math.max(
+    source.lastIndexOf('[#', cursorOffset - 1),
+    source.lastIndexOf('[@', cursorOffset - 1)
+  );
+  if (change.text === ']' && squareStart < 0) return undefined;
+  if (change.text === '>' && squareStart > angleStart) return undefined;
+  const tagStart = change.text === ']' ? squareStart : angleStart;
+  if (tagStart < 0) return undefined;
+
+  const opener = change.text === ']' ? '[' : '<';
+  const ending = opener === '<' ? '>' : ']';
+  if (change.text !== ending) return undefined;
+  const tagText = source.slice(tagStart, cursorOffset);
+  if (!tagText.endsWith(ending)) return undefined;
+  const header = tagText.slice(1, -1);
+  let quote = null;
+  for (let index = 0; index < header.length; index += 1) {
+    const character = header[index];
+    if (quote) {
+      if (character === quote && header[index - 1] !== '\\') quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (opener === '<' && character === ending && !/^[#@]/.test(header)) {
+      return undefined;
+    }
+  }
+  if (quote) return undefined;
+  if (header.startsWith('/') || /\/\s*$/.test(header)) return undefined;
+
+  const special = /^([#@])([A-Za-z_][A-Za-z0-9_.-]*)\b/.exec(header);
+  let closeTag;
+  if (special) {
+    if (special[1] === '#' && !autoCloseDirectives.has(special[2])) return undefined;
+    closeTag = `${opener}/${special[1]}${special[2]}${ending}`;
+    if (special[1] === '#' && ending === '>' && /\s>$/.test(header)) return undefined;
+  } else {
+    const html = /^([A-Za-z][A-Za-z0-9:-]*)\b/.exec(header);
+    if (!html || htmlVoidElements.has(html[1].toLowerCase())) return undefined;
+    closeTag = `</${html[1]}>`;
+  }
+
+  const remainder = source.slice(cursorOffset);
+  if (remainder.startsWith(closeTag)) return undefined;
+  return closeTag;
+}
 
 function syntaxOptions() {
   const configuration = vscode.workspace.getConfiguration('freemarker');
@@ -1490,6 +1550,16 @@ function activate(context) {
       if (event.document.languageId === 'freemarker') {
         index.currentRecord(event.document);
         validateDocument(event.document);
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document !== event.document || event.contentChanges.length !== 1) return;
+        const closingText = closingTextAfterTypedTag(event.document, event.contentChanges[0]);
+        if (!closingText) return;
+        const cursor = event.document.positionAt(
+          event.contentChanges[0].rangeOffset + event.contentChanges[0].text.length
+        );
+        editor.edit((editBuilder) => editBuilder.insert(cursor, closingText)).then((applied) => {
+          if (applied) editor.selection = new vscode.Selection(cursor, cursor);
+        });
       }
     }),
     vscode.workspace.onDidOpenTextDocument((document) => {

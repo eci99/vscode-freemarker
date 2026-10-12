@@ -165,6 +165,12 @@ let onDidChangeDocument;
 const disposable = { dispose() {} };
 const vscode = {
   Position,
+  Selection: class {
+    constructor(anchor, active) {
+      this.anchor = anchor;
+      this.active = active;
+    }
+  },
   Range,
   Location,
   Hover,
@@ -261,6 +267,9 @@ const vscode = {
   },
   commands: {
     executeCommand: async (...args) => executedCommands.push(args)
+  },
+  window: {
+    activeTextEditor: undefined
   },
   workspace: {
     workspaceFolders: [{ uri: uri('/virtual/work') }],
@@ -363,6 +372,45 @@ async function run() {
   const subscriptions = [];
   extension.activate({ subscriptions });
   const mainUri = uri('/virtual/work/pages/main.ftl');
+
+  const applyTypedCharacter = async (text, character, insertionOffset = text.length - character.length) => {
+    const document = new Document(mainUri, text);
+    const editor = {
+      document,
+      edit: async (callback) => {
+        let insertion;
+        callback({ insert: (position, value) => { insertion = { position, value }; } });
+        if (!insertion) return false;
+        const offset = document.offsetAt(insertion.position);
+        document.text = `${document.text.slice(0, offset)}${insertion.value}${document.text.slice(offset)}`;
+        return true;
+      }
+    };
+    vscode.window.activeTextEditor = editor;
+    await onDidChangeDocument({
+      document,
+      contentChanges: [{ rangeOffset: insertionOffset, rangeLength: 0, text: character }]
+    });
+    if (editor.selection) {
+      assert.strictEqual(document.offsetAt(editor.selection.active), insertionOffset + character.length);
+    }
+    vscode.window.activeTextEditor = undefined;
+    return document.getText();
+  };
+
+  assert.strictEqual(await applyTypedCharacter('<section>', '>'), '<section></section>');
+  assert.strictEqual(await applyTypedCharacter('<#macro render>', '>'), '<#macro render></#macro>');
+  assert.strictEqual(await applyTypedCharacter('<@render>', '>'), '<@render></@render>');
+  assert.strictEqual(await applyTypedCharacter('<#function total>', '>'), '<#function total></#function>');
+  assert.strictEqual(await applyTypedCharacter('<img>', '>'), '<img>');
+  assert.strictEqual(await applyTypedCharacter('<section></section>', '>', '<section'.length), '<section></section>');
+  assert.strictEqual(await applyTypedCharacter('<div title="a>b">', '>'), '<div title="a>b"></div>');
+  assert.strictEqual(await applyTypedCharacter('<#if items[0] > 1>', '>'), '<#if items[0] > 1></#if>');
+  settings.tagSyntax = 'squareBracket';
+  assert.strictEqual(await applyTypedCharacter('[#function total]', ']'), '[#function total][/#function]');
+  assert.strictEqual(await applyTypedCharacter('[#if items[0]]', ']'), '[#if items[0]][/#if]');
+  delete settings.tagSyntax;
+
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
 
@@ -403,6 +451,7 @@ async function run() {
   onDidOpenDocument(invalidDocument);
   assert.strictEqual(diagnosticEntries.get(mainUri.fsPath).length, 2);
   assert(diagnosticEntries.get(mainUri.fsPath)[0].message.includes('does not match the open'));
+
   invalidDocument.text = '<#if ready>\n</#if>';
   onDidChangeDocument({ document: invalidDocument });
   assert.strictEqual(diagnosticEntries.has(mainUri.fsPath), false);
