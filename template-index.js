@@ -360,4 +360,4 @@ function parseTemplate(text, options) {
   };
 }
 
-module.exports = { findTagEnd, literalType, parseTemplate, symbolType };
+module.exports = { findTagEnd, literalType, parseTemplate, splitParameters, symbolType };

@@ -2,6 +2,7 @@ const path = require('path');
 const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
 const { BUILTINS, builtinBefore, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
+const { toggleLineComments } = require('./comments');
 const { formatTemplate } = require('./formatter');
 const {
   DIRECTIVES,
@@ -10,9 +11,10 @@ const {
   findSpecialVariable,
   specialVariableNameStart
 } = require('./directives');
+const { semanticTokens } = require('./semantic-tokens');
 const { displayText, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
-const { templateBlocks, validateTemplate } = require('./validator');
+const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 // For text that has already been rewritten to the default syntax.
@@ -21,6 +23,13 @@ const htmlVoidElements = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
   'param', 'source', 'track', 'wbr'
 ]);
+// Local variables are variables with the modifier 'local'.
+const semanticTokensLegend = new vscode.SemanticTokensLegend(
+  ['parameter', 'variable', 'namespace', 'macro', 'function'],
+  ['local']
+);
+const pathTriggerCharacters = ['"', "'", '/'];
+const htmlTagNamePattern = /^[A-Za-z][A-Za-z0-9:-]*$/;
 const autoCloseDirectives = new Set([
   'if', 'list', 'foreach', 'switch', 'macro', 'function', 'attempt', 'compress',
   'noparse', 'outputformat', 'autoesc', 'noautoesc', 'escape', 'transform',
@@ -78,6 +87,37 @@ function closingTextAfterTypedTag(document, change) {
   return closeTag;
 }
 
+function closingTagAfterTypedSlash(document, change, record) {
+  if (change.rangeLength !== 0 || change.text !== '/') return undefined;
+  const source = document.getText();
+  const opener = source[change.rangeOffset - 1];
+  const squareSyntax = record.tagSyntax === 'square';
+  if (opener !== '<' && !(opener === '[' && squareSyntax)) return undefined;
+
+  const sourceBeforeTag = record.source.slice(0, change.rangeOffset - 1);
+  const candidates = htmlTags(sourceBeforeTag).unclosed.map((tag) => ({ ...tag, kind: 'html' }));
+  if (opener === '[' || !squareSyntax) {
+    candidates.push(...templateBlocks(sourceBeforeTag, defaultSyntax).unclosed
+      .filter((block) => !block.optional)
+      .map((block) => ({ ...block, kind: block.kind })));
+  }
+  candidates.sort((left, right) => right.offset - left.offset);
+  const innermost = candidates[0];
+  if (!innermost) return undefined;
+
+  let closingText;
+  if (innermost.kind === 'html') {
+    closingText = `${innermost.name}>`;
+  } else {
+    const prefix = innermost.kind === 'directive' ? '#' : '@';
+    closingText = `${prefix}${innermost.name}${squareSyntax ? ']' : '>'}`;
+  }
+
+  const cursorOffset = change.rangeOffset + change.text.length;
+  if (record.source.slice(cursorOffset).startsWith(closingText)) return undefined;
+  return closingText;
+}
+
 function syntaxOptions() {
   const configuration = vscode.workspace.getConfiguration('freemarker');
   return {
@@ -127,6 +167,66 @@ class TemplateWorkspaceIndex {
     return this.records.get(this.key(document.uri));
   }
 
+  // The directories a template path can start from, in the order they are searched.
+  // Paths are resolved against the workspace folders too, but not suggested from there.
+  templateBases(fromRecord, isRooted, workspaceFolders = true) {
+    const bases = [];
+    if (!isRooted && fromRecord.uri.scheme === 'file') bases.push(path.dirname(fromRecord.uri.fsPath));
+    const folders = this.folders.filter((folder) => folder.uri.scheme === 'file');
+    if (workspaceFolders) for (const folder of folders) bases.push(folder.uri.fsPath);
+
+    const templateRoots = vscode.workspace.getConfiguration('freemarker').get('templateRoots', []);
+    for (const folder of folders) {
+      for (const root of templateRoots) bases.push(path.resolve(folder.uri.fsPath, root));
+    }
+    return bases;
+  }
+
+  // The templates and folders that can follow the part of an import or include path that is already typed.
+  templatePathCompletions(record, document, position, typedPath) {
+    const isRooted = typedPath.startsWith('/');
+    const directory = typedPath.slice(0, typedPath.lastIndexOf('/') + 1);
+    const range = new vscode.Range(
+      document.positionAt(document.offsetAt(position) - (typedPath.length - directory.length)),
+      position
+    );
+    const ownKey = this.key(record.uri);
+    const items = new Map();
+    const addItem = (name, isFolder, order, detail) => {
+      const label = isFolder ? `${name}/` : name;
+      if (items.has(label)) return;
+      const item = new vscode.CompletionItem(label, isFolder ? vscode.CompletionItemKind.Folder : vscode.CompletionItemKind.File);
+      item.insertText = label;
+      item.range = range;
+      item.detail = detail;
+      item.sortText = `${order}_${isFolder ? '0' : '1'}_${name.toLowerCase()}`;
+      // The next part of the path is suggested right away.
+      if (isFolder) item.command = { command: 'editor.action.triggerSuggest', title: 'Suggest' };
+      items.set(label, item);
+    };
+
+    this.templateBases(record, isRooted, false).forEach((base, order) => {
+      const target = path.resolve(base, directory.replace(/^\/+/, ''));
+      const isOwnDirectory = !isRooted && order === 0 && record.uri.scheme === 'file';
+      // Only a path relative to the template itself can leave its starting directory.
+      if (!isOwnDirectory && path.relative(base, target).startsWith('..')) return;
+      for (const key of this.records.keys()) {
+        if (key === ownKey) continue;
+        const relative = path.relative(target, key);
+        if (path.isAbsolute(relative)) continue;
+        const segments = relative.split(path.sep);
+        if (segments[0] === '..') {
+          if (isOwnDirectory && /^(?:\.\.\/)*$/.test(directory)) addItem('..', true, order);
+        } else if (segments.length > 1) {
+          addItem(segments[0], true, order);
+        } else {
+          addItem(segments[0], false, order, vscode.workspace.asRelativePath ? vscode.workspace.asRelativePath(key) : undefined);
+        }
+      }
+    });
+    return [...items.values()];
+  }
+
   resolveTemplate(fromRecord, templatePath) {
     const cleanPath = templatePath.replace(/\\/g, '/');
     const isRooted = cleanPath.startsWith('/');
@@ -140,21 +240,7 @@ class TemplateWorkspaceIndex {
       }
     };
 
-    if (!isRooted && fromRecord.uri.scheme === 'file') {
-      addCandidate(path.dirname(fromRecord.uri.fsPath), cleanPath);
-    }
-
-    for (const folder of this.folders) {
-      if (folder.uri.scheme === 'file') addCandidate(folder.uri.fsPath, relativePath);
-    }
-
-    const templateRoots = vscode.workspace.getConfiguration('freemarker').get('templateRoots', []);
-    for (const folder of this.folders) {
-      if (folder.uri.scheme !== 'file') continue;
-      for (const root of templateRoots) {
-        addCandidate(path.resolve(folder.uri.fsPath, root), relativePath);
-      }
-    }
+    for (const base of this.templateBases(fromRecord, isRooted)) addCandidate(base, relativePath);
 
     for (const candidate of candidates) {
       const record = this.records.get(path.resolve(candidate));
@@ -859,34 +945,10 @@ class TemplateWorkspaceIndex {
             document.positionAt(selectionStart + selectionLength)
           )
         );
-      })
-      .sort((left, right) => left.name.localeCompare(right.name));
-    const groups = [
-      { name: '01 Imports & Includes', kind: null, directives: true },
-      { name: '02 Variables', kind: 'variable' },
-      { name: '03 Functions', kind: 'function' },
-      { name: '04 Macros', kind: 'macro' }
-    ];
-    const documentRange = new vscode.Range(
-      document.positionAt(0),
-      document.positionAt(record.source.length)
-    );
-    return groups.flatMap(({ name, kind, directives }) => {
-      const children = declarations
-        .filter((symbol) => symbol.detail === kind)
-        .sort((left, right) => left.name.localeCompare(right.name));
-      const groupChildren = directives ? templateDirectives : children;
-      if (!groupChildren.length) return [];
-      const group = new vscode.DocumentSymbol(
-        name,
-        '',
-        vscode.SymbolKind.Namespace,
-        documentRange,
-        new vscode.Range(document.positionAt(0), document.positionAt(0))
-      );
-      group.children = groupChildren;
-      return [group];
-    });
+      });
+    // In the order of the template, which the outline can sort by name or kind itself.
+    const offsetOf = (symbol) => document.offsetAt(symbol.range.start);
+    return [...templateDirectives, ...declarations].sort((left, right) => offsetOf(left) - offsetOf(right));
   }
 
   async definition(document, position) {
@@ -1199,7 +1261,45 @@ class TemplateWorkspaceIndex {
     return results;
   }
 
+  // Colors names by what they are, which the grammar cannot tell.
+  async semanticTokens(document) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const included = this.namespaceDeclarations(record, true).filter(({ symbol, record: source }) =>
+      (source !== record || symbol.kind === 'namespace')
+      && !/^[<[]#(?:list|items)\b/.test(symbol.declaration || ''));
+    const names = (kind) => included.filter(({ symbol }) => symbol.kind === kind).map(({ symbol }) => symbol.name);
+    const builder = new vscode.SemanticTokensBuilder(semanticTokensLegend);
+    const declaredElsewhere = { variables: names('variable'), functions: names('function'), namespaces: names('namespace') };
+    for (const token of semanticTokens(record.source, declaredElsewhere)) {
+      builder.push(
+        new vscode.Range(document.positionAt(token.offset), document.positionAt(token.offset + token.length)),
+        token.type,
+        token.local ? ['local'] : []
+      );
+    }
+    return builder.build();
+  }
+
+  // The names in the start and end tag of the HTML element whose start tag is at the
+  // position. An end tag is not renamed.
+  htmlTagNames(document, position) {
+    const offset = document.offsetAt(position);
+    const pair = htmlTags(this.currentRecord(document).source).pairs.find((candidate) =>
+      offset >= candidate.open && offset <= candidate.open + candidate.openLength
+    );
+    if (!pair) return undefined;
+    return [[pair.open, pair.openLength], [pair.close, pair.closeLength]].map(([start, length]) =>
+      new vscode.Range(document.positionAt(start), document.positionAt(start + length))
+    );
+  }
+
   async prepareRename(document, position) {
+    const htmlTagNames = this.htmlTagNames(document, position);
+    if (htmlTagNames) {
+      return { range: htmlTagNames[0], placeholder: document.getText(htmlTagNames[0]) };
+    }
+
     await this.ready;
     const target = await this.symbolAt(document, position);
     if (!target) return undefined;
@@ -1241,6 +1341,16 @@ class TemplateWorkspaceIndex {
   }
 
   async rename(document, position, newName) {
+    const htmlTagNames = this.htmlTagNames(document, position);
+    if (htmlTagNames) {
+      if (!newName || !htmlTagNamePattern.test(newName)) {
+        throw new Error(`'${newName}' is not a valid HTML tag name.`);
+      }
+      const edit = new vscode.WorkspaceEdit();
+      for (const range of htmlTagNames) edit.replace(document.uri, range, newName);
+      return edit;
+    }
+
     if (!newName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) {
       throw new Error(`'${newName}' is not a valid FreeMarker identifier.`);
     }
@@ -1318,23 +1428,6 @@ class TemplateWorkspaceIndex {
     });
   }
 
-  // The names that an end tag at the end of the text can close, innermost block first.
-  closingTagCompletions(record, textBefore, kind, tagIsClosed) {
-    return templateBlocks(textBefore, defaultSyntax).unclosed
-      .filter((block) => block.kind === kind && !block.optional)
-      .reverse()
-      .map((block, depth) => {
-        const item = new vscode.CompletionItem(
-          block.name,
-          kind === 'directive' ? vscode.CompletionItemKind.Keyword : vscode.CompletionItemKind.Method
-        );
-        item.detail = this.tagText(record, `Close <${kind === 'directive' ? '#' : '@'}${block.name}>`);
-        item.insertText = tagIsClosed ? block.name : `${block.name}${record.tagSyntax === 'square' ? ']' : '>'}`;
-        item.sortText = String(depth).padStart(4, '0');
-        return item;
-      });
-  }
-
   specialVariableCompletions(record) {
     return SPECIAL_VARIABLES.map((variable) => {
       const item = new vscode.CompletionItem(variable.name, vscode.CompletionItemKind.Constant);
@@ -1344,25 +1437,23 @@ class TemplateWorkspaceIndex {
     });
   }
 
-  async completions(document, position) {
+  async completions(document, position, triggerCharacter) {
     await this.ready;
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
+    const templatePath = /<#(?:import|include)\s+r?(["'])([^"'<>]*)$/.exec(beforeCursor);
+    if (templatePath && /^[^"']*$/.test(templatePath[2])) {
+      return this.templatePathCompletions(record, document, position, templatePath[2]);
+    }
+    // These characters only ask for the paths of import and include.
+    if (pathTriggerCharacters.includes(triggerCharacter)) return [];
     const builtinStart = builtinNameStart(beforeCursor);
     if (builtinStart >= 0 && this.isFreeMarkerExpression(record.source, builtinStart, offset)) {
       return this.builtinCompletions(record, this.builtinTargetType(record, beforeCursor.slice(0, builtinStart - 1)));
     }
     const tagStart = /<(\/?)([#@])([A-Za-z_][A-Za-z0-9_.-]*)?$/.exec(beforeCursor);
-    if (tagStart && tagStart[1]) {
-      return this.closingTagCompletions(
-        record,
-        beforeCursor.slice(0, tagStart.index),
-        tagStart[2] === '#' ? 'directive' : 'macro',
-        record.source[offset] === '>' || (record.tagSyntax === 'square' && record.source[offset] === ']')
-      );
-    }
-    if (tagStart && tagStart[2] === '#') return this.directiveCompletions(record);
+    if (tagStart && !tagStart[1] && tagStart[2] === '#') return this.directiveCompletions(record);
     const specialVariableStart = specialVariableNameStart(beforeCursor);
     if (specialVariableStart >= 0 && this.isFreeMarkerExpression(record.source, specialVariableStart, offset)) {
       return this.specialVariableCompletions(record);
@@ -1486,7 +1577,10 @@ function activate(context) {
       if (entries.length) diagnostics.set(document.uri, entries);
       else diagnostics.delete(document.uri);
     };
-    const issues = validateTemplate(text, syntaxOptions());
+    const issues = validateTemplate(text, {
+      ...syntaxOptions(),
+      validateHtml: vscode.workspace.getConfiguration('freemarker').get('validateHtmlTags', true)
+    });
     publish(issues);
     // The checks against other templates have to wait until the workspace is indexed.
     index.ready.then(() => {
@@ -1515,12 +1609,16 @@ function activate(context) {
       prepareRename: (document, position) => index.prepareRename(document, position),
       provideRenameEdits: (document, position, newName) => index.rename(document, position, newName)
     }),
+    vscode.languages.registerDocumentSemanticTokensProvider({ language: 'freemarker' }, {
+      provideDocumentSemanticTokens: (document) => index.semanticTokens(document)
+    }, semanticTokensLegend),
     vscode.languages.registerSignatureHelpProvider({ language: 'freemarker' }, {
       provideSignatureHelp: (document, position) => index.signatureHelp(document, position)
     }, '(', ','),
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
-      provideCompletionItems: (document, position) => index.completions(document, position)
-    }, '.', '@', ' ', '?', '#'),
+      provideCompletionItems: (document, position, _token, context) =>
+        index.completions(document, position, context && context.triggerCharacter)
+    }, '.', '@', ' ', '?', '#', ...pathTriggerCharacters),
     vscode.languages.registerDocumentLinkProvider({ language: 'freemarker' }, {
       provideDocumentLinks: async (document) => {
         await index.ready;
@@ -1552,13 +1650,47 @@ function activate(context) {
         validateDocument(event.document);
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document !== event.document || event.contentChanges.length !== 1) return;
-        const closingText = closingTextAfterTypedTag(event.document, event.contentChanges[0]);
-        if (!closingText) return;
+        const change = event.contentChanges[0];
         const cursor = event.document.positionAt(
-          event.contentChanges[0].rangeOffset + event.contentChanges[0].text.length
+          change.rangeOffset + change.text.length
         );
-        editor.edit((editBuilder) => editBuilder.insert(cursor, closingText)).then((applied) => {
+        const record = index.currentRecord(event.document);
+        const closingEndTag = closingTagAfterTypedSlash(event.document, change, record);
+        if (closingEndTag) {
+          const finalCursor = new vscode.Position(cursor.line, cursor.character + closingEndTag.length);
+          return editor.edit((editBuilder) => editBuilder.insert(cursor, closingEndTag)).then((applied) => {
+            if (applied) editor.selection = new vscode.Selection(finalCursor, finalCursor);
+          });
+        }
+        const closingText = closingTextAfterTypedTag(event.document, change);
+        if (!closingText) return;
+        return editor.edit((editBuilder) => editBuilder.insert(cursor, closingText)).then((applied) => {
           if (applied) editor.selection = new vscode.Selection(cursor, cursor);
+        });
+      }
+    }),
+    // The editor's own Toggle Line Comment puts several lines into a single comment.
+    vscode.commands.registerTextEditorCommand('freemarker.toggleLineComment', (editor, edit) => {
+      const { document } = editor;
+      const { tagSyntax } = index.currentRecord(document);
+      let nextLine = 0;
+      const selections = [...editor.selections].sort((left, right) => left.start.line - right.start.line);
+      for (const selection of selections) {
+        // A selection that ends at the start of a line does not include that line.
+        const endsBeforeLine = selection.end.line > selection.start.line && selection.end.character === 0;
+        const firstLine = Math.max(selection.start.line, nextLine);
+        const lastLine = selection.end.line - (endsBeforeLine ? 1 : 0);
+        if (lastLine < firstLine) continue;
+        nextLine = lastLine + 1;
+
+        const lines = [];
+        for (let line = firstLine; line <= lastLine; line += 1) lines.push(document.lineAt(line).text);
+        toggleLineComments(lines, tagSyntax).forEach((text, offset) => {
+          if (text === lines[offset]) return;
+          edit.replace(
+            new vscode.Range(firstLine + offset, 0, firstLine + offset, lines[offset].length),
+            text
+          );
         });
       }
     }),

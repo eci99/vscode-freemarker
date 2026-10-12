@@ -190,9 +190,117 @@ function templateBlocks(text, options) {
   return { source, blocks, unclosed: stack, diagnostics };
 }
 
-function validateTemplate(text, options) {
-  const { source, blocks, diagnostics } = templateBlocks(text, options);
-  return [...diagnostics, ...validateBuiltins(source, blocks)];
+const htmlVoidElements = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+  'param', 'source', 'track', 'wbr'
+]);
+const htmlRawTextElements = new Set(['script', 'style']);
+
+// Like findTagEnd, for an HTML tag that can have FreeMarker tags between its attributes.
+function findHtmlTagEnd(text, start) {
+  let quote = null;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '<' && /^<\/?[#@]/.test(text.slice(index, index + 3))) {
+      const end = findTagEnd(text, index + 1);
+      if (end < 0) return -1;
+      index = end;
+    } else if (character === '>') {
+      return index;
+    }
+  }
+  return -1;
 }
 
-module.exports = { templateBlocks, validateTemplate };
+// Pairs the start and end tags of the HTML in a template that is already in the default
+// syntax. `pairs` are the name offsets of the start and end tag of each closed element,
+// and `unclosed` are the elements that are still open at the end of the text,
+// outermost first. FreeMarker tags are skipped, so every start tag needs an end tag of
+// its own, whatever directive it is in.
+function htmlTags(source) {
+  const stack = [];
+  const pairs = [];
+  const diagnostics = [];
+  const report = (tag) => {
+    diagnostics.push({
+      message: `Unclosed HTML tag <${tag.name}>.`,
+      offset: tag.offset,
+      length: tag.length,
+      severity: 'warning'
+    });
+  };
+
+  for (let index = 0; index < source.length;) {
+    if (source[index] !== '<') {
+      if ((source[index] === '$' || source[index] === '#') && source[index + 1] === '{') {
+        const interpolationEnd = findInterpolationEnd(source, index + 2);
+        index = interpolationEnd < 0 ? index + 2 : interpolationEnd + 1;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+    if (source.startsWith('<!--', index) || source.startsWith('<#--', index)) {
+      const commentEnd = source.indexOf('-->', index + 4);
+      if (commentEnd < 0) break;
+      index = commentEnd + 3;
+      continue;
+    }
+
+    if (/^<\/?[#@]/.test(source.slice(index, index + 3))) {
+      const tagEnd = findTagEnd(source, index + 1);
+      if (tagEnd < 0) break;
+      index = tagEnd + 1;
+      continue;
+    }
+
+    const match = /^<(\/?)([A-Za-z][A-Za-z0-9:-]*)/.exec(source.slice(index, index + 80));
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    const tagEnd = findHtmlTagEnd(source, index + match[0].length);
+    if (tagEnd < 0) break;
+    const name = match[2];
+    const lowerName = name.toLowerCase();
+    const offset = index;
+    index = tagEnd + 1;
+    if (match[1]) {
+      const openIndex = stack.map((tag) => tag.name.toLowerCase()).lastIndexOf(lowerName);
+      if (openIndex >= 0) {
+        const closed = stack.splice(openIndex);
+        pairs.push({ open: closed[0].offset + 1, openLength: closed[0].name.length, close: offset + 2, closeLength: name.length });
+        closed.slice(1).reverse().forEach(report);
+      } else {
+        diagnostics.push({
+          message: `Unexpected closing HTML tag </${name}>.`,
+          offset,
+          length: index - offset,
+          severity: 'warning'
+        });
+      }
+    } else if (!htmlVoidElements.has(lowerName) && !/\/\s*$/.test(source.slice(offset, tagEnd))) {
+      stack.push({ name, offset, length: match[0].length });
+      if (htmlRawTextElements.has(lowerName)) {
+        const rawTextEnd = source.toLowerCase().indexOf(`</${lowerName}`, index);
+        index = rawTextEnd < 0 ? source.length : rawTextEnd;
+      }
+    }
+  }
+
+  [...stack].reverse().forEach(report);
+  return { pairs, unclosed: stack, diagnostics };
+}
+
+// options.validateHtml: false leaves the HTML of the template unchecked.
+function validateTemplate(text, options = {}) {
+  const { source, blocks, diagnostics } = templateBlocks(text, options);
+  const htmlDiagnostics = options.validateHtml === false ? [] : htmlTags(source).diagnostics;
+  return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks)];
+}
+
+module.exports = { htmlTags, templateBlocks, validateTemplate };

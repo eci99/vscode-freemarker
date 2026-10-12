@@ -15,8 +15,8 @@ Both tag syntaxes are supported, `<#if x>...</#if>` and `[#if x]...[/#if]`, as w
 - **Function arguments**: variables and namespaces in scope, with the full signature and the current parameter in the documentation.
 - **Built-ins** after `?`, with parameters and a short description. Built-ins that fit the expression are listed first, for example string built-ins after a variable that was assigned a string, or `index` and `has_next` after a loop variable.
 - **Directives** after `<#`, with their syntax.
-- **End tags**: `</#` and `</@` offer the blocks that are still open, innermost first.
 - **Special variables** after a leading `.`, such as `.now` or `.current_template_name`.
+- **Template paths** in `<#import>` and `<#include>`: the templates and folders of the workspace, relative to the current template and to the configured template roots.
 - **Snippets** for common constructs: `if`, `ife`, `elif`, `else`, `list`, `assign`, `local`, `macro`, `import`, `include`, `interp`, and `ftlcomment`.
 
 Completion labels show what is known about a symbol: the value assigned to a variable, or the parameters and defaults of a macro or function.
@@ -26,7 +26,7 @@ Completion labels show what is known about a symbol: the value assigned to a var
 - **Go to Definition** for macros, functions, namespace members, variables (including capture assignments, loop variables, and fields of hash literals), namespace aliases, and `import`/`include` paths. On a macro or function declaration it lists the call sites instead.
 - **Find All References** and **Rename Symbol** for variables, macros, and functions, across all templates that import or include them.
 - **Clickable paths** in `<#import>` and `<#include>`.
-- **Outline** with imports and includes, variables, functions, and macros.
+- **Outline** with imports and includes, variables, functions, and macros, in the order of the template.
 - **Workspace symbol search** (`Ctrl+T`) for macros, functions, and variables in all templates.
 
 ### Hover and Signature Help
@@ -43,6 +43,10 @@ Reported as errors:
 - `<#else>`, `<#elseif>`, `<#case>`, `<#default>`, `<#on>`, and `<#recover>` outside the directive they belong to
 - Unknown built-ins, with a suggestion for likely typos: `?uper_case` → `?upper_case`
 
+Reported as warnings:
+
+- HTML tags that are never closed, and closing HTML tags without a start tag. Every start tag needs an end tag of its own, also in the branches of a directive: `<#if a><div class="a"><#else><div></#if>` opens two elements.
+
 Reported as warnings, based on the workspace index:
 
 - `import`/`include` paths that cannot be found
@@ -51,10 +55,14 @@ Reported as warnings, based on the workspace index:
 
 ### Formatting and editing
 
-- **Format Document** indents nested FreeMarker blocks and paired `<@...>` calls. Regions between `<#-- @formatter:off -->` and `<#-- @formatter:on -->` are left as they are.
+- **Format Document** indents nested FreeMarker blocks, paired `<@...>` calls, and HTML elements. Lines are never split or joined, so an element with its start and end tag on one line stays on that line. An HTML element without an end tag, such as `<li>` or `<br>`, does not indent what follows. The content of `<pre>` and `<textarea>` is left alone, and scripts and style sheets keep their own indentation. Regions between `<#-- @formatter:off -->` and `<#-- @formatter:on -->` are left as they are.
 - **Folding** for FreeMarker blocks and comments. The parts before and after `<#else>` fold separately.
+- **Automatic end tags**: typing `>` after a start tag inserts the end tag, for HTML elements, block directives, and `<@...>` calls. Typing `</` completes the end tag of the innermost element or block that is still open.
+- **Toggle Line Comment** (`Ctrl+/`) puts every selected line into a FreeMarker comment of its own, `<#-- ... -->` or `[#-- ... --]` depending on the tag syntax of the template, and removes the comments again. The comment starts at the beginning of the line and the indentation stays inside it.
+- **Rename HTML tags**: **Rename Symbol** (`F2`) on the name of an HTML start tag renames its end tag as well.
 - **Matching tags**: with the cursor on a tag, the start tag, the end tag, and branch tags such as `<#else>` of the same block are highlighted.
 - **Syntax highlighting** for directives, interpolations, comments, expressions, built-ins, and special variables, on top of HTML.
+- **Colors for names**: macros, functions, parameters, variables, local variables, and namespace aliases are told apart where they are declared and where they are used. The colors come from the color theme, so how many of them look different depends on the theme. They can be set with `editor.semanticTokenColorCustomizations`, using the selectors `macro:freemarker`, `function:freemarker`, `parameter:freemarker`, `variable:freemarker`, `variable.local:freemarker` (`<#local>` and loop variables), and `namespace:freemarker`.
 
 ## How templates are connected
 
@@ -88,6 +96,7 @@ The two are independent: `[#if x]${y}[/#if]` and `<#if x>[=y]</#if>` are both po
 | `freemarker.tagSyntax` | `auto` | `auto`, `angleBracket`, or `squareBracket`, matching the `tag_syntax` setting of FreeMarker. With `auto`, the first FreeMarker tag of a template decides. |
 | `freemarker.interpolationSyntax` | `legacy` | `legacy` (`${x}` and `#{x}`), `dollar` (only `${x}`), or `squareBracket` (only `[=x]`), matching the `interpolation_syntax` setting of FreeMarker. |
 | `freemarker.validateTemplatePaths` | `true` | Warn about `import`/`include` paths that cannot be found. Turn this off if templates are loaded from outside the workspace, for example from a JAR. |
+| `freemarker.validateHtmlTags` | `true` | Warn about HTML tags that are never closed and about closing HTML tags without a start tag. Turn this off if the templates produce something other than HTML. |
 | `freemarker.privatePrefix` | `_` | Prefix that marks macros, functions, variables, and namespace aliases as private to their template. |
 
 ## Limitations

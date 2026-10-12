@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker IntelliSense",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -29,7 +29,7 @@
     "intellisense"
   ],
   "scripts": {
-    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/extension.test.js"
+    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/comments.test.js && node ./test/semantic-tokens.test.js && node ./test/extension.test.js"
   },
   "contributes": {
     "configuration": {
@@ -68,11 +68,56 @@
           "default": true,
           "description": "Warn about import and include paths that cannot be found in the workspace or the configured template roots. Turn this off if templates are loaded from outside the workspace, for example from a JAR."
         },
+        "freemarker.validateHtmlTags": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about HTML tags that are never closed and about closing HTML tags without a start tag. Turn this off if the templates produce something other than HTML."
+        },
         "freemarker.privatePrefix": {
           "type": "string",
           "default": "_",
           "description": "Prefix used for private template definitions and namespace aliases. Private names are not exposed through imported namespaces."
         }
+      }
+    },
+    "commands": [
+      {
+        "command": "freemarker.toggleLineComment",
+        "title": "Toggle Line Comment",
+        "category": "FreeMarker",
+        "enablement": "editorLangId == freemarker"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "freemarker.toggleLineComment",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "editorTextFocus && !editorReadonly && editorLangId == freemarker"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "local",
+        "description": "A variable that only exists inside a macro, a function, or a loop."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "freemarker",
+        "scopes": {
+          "namespace": ["entity.name.namespace.freemarker"],
+          "macro": ["entity.name.function.macro.freemarker"],
+          "function": ["entity.name.function.freemarker"],
+          "parameter": ["variable.parameter.freemarker"],
+          "variable": ["variable.other.readwrite.freemarker"],
+          "variable.local": ["variable.other.constant.freemarker"]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[freemarker]": {
+        "editor.semanticHighlighting.enabled": true
       }
     },
     "languages": [

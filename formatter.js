@@ -5,7 +5,13 @@ const BLOCK_DIRECTIVES = new Set([
 ]);
 const BRANCH_DIRECTIVES = new Set(['else', 'elseif', 'case', 'default', 'recover']);
 
+// The whitespace inside these elements is part of the page.
+const PREFORMATTED_ELEMENTS = new Set(['pre', 'textarea']);
+// Scripts and style sheets keep the indentation they have relative to their first line.
+const RAW_TEXT_ELEMENTS = new Set(['script', 'style']);
+
 const { normalizeTemplate } = require('./syntax');
+const { htmlTags } = require('./validator');
 
 function maskComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) =>
@@ -28,20 +34,21 @@ function findTagEnd(text, start) {
   return -1;
 }
 
-function tagsInLine(line) {
+// The FreeMarker tags of a template. A tag can span several lines.
+function freemarkerTags(text) {
   const tags = [];
   const opening = /<(\/?)#([A-Za-z_][A-Za-z0-9_-]*)|<(\/?)@([A-Za-z_][A-Za-z0-9_.-]*)/g;
   let match;
 
-  while ((match = opening.exec(line)) !== null) {
-    const end = findTagEnd(line, opening.lastIndex);
+  while ((match = opening.exec(text)) !== null) {
+    const end = findTagEnd(text, opening.lastIndex);
     if (end < 0) continue;
     const directive = match[2] !== undefined;
     const closing = directive ? match[1] === '/' : match[3] === '/';
     const name = directive ? match[2] : match[4];
-    const selfClosing = !directive && !closing && /\/\s*$/.test(line.slice(opening.lastIndex, end));
+    const selfClosing = !directive && !closing && /\/\s*$/.test(text.slice(opening.lastIndex, end));
     tags.push({
-      start: match.index,
+      offset: match.index,
       end,
       directive,
       closing,
@@ -92,10 +99,63 @@ function formatterMarker(line) {
   return commentCloser !== null ? marker[1] : undefined;
 }
 
+// The tags of a template by the line they start on, the lines that continue a FreeMarker
+// tag, and the lines inside HTML elements that are not indented like the rest. Of the
+// HTML elements only those that have both tags take part, so a <li> or <p> without an
+// end tag does not shift what follows.
+function templateStructure(maskedText) {
+  const lineStarts = [0];
+  for (let index = maskedText.indexOf('\n'); index >= 0; index = maskedText.indexOf('\n', index + 1)) {
+    lineStarts.push(index + 1);
+  }
+  const locate = (offset) => {
+    let line = lineStarts.length - 1;
+    while (lineStarts[line] > offset) line -= 1;
+    return { line, start: offset - lineStarts[line] };
+  };
+
+  const tags = new Map();
+  const continuations = new Map();
+  const regions = [];
+  for (const tag of freemarkerTags(maskedText)) {
+    const position = locate(tag.offset);
+    tag.start = position.start;
+    if (!tags.has(position.line)) tags.set(position.line, []);
+    tags.get(position.line).push(tag);
+    for (let line = position.line + 1; line <= locate(tag.end).line; line += 1) continuations.set(line, tag);
+  }
+  for (const pair of htmlTags(maskedText).pairs) {
+    const name = maskedText.slice(pair.open, pair.open + pair.openLength).toLowerCase();
+    const open = locate(pair.open - 1);
+    const close = locate(pair.close - 2);
+    for (const [position, closing] of [[open, false], [close, true]]) {
+      if (!tags.has(position.line)) tags.set(position.line, []);
+      tags.get(position.line).push({ start: position.start, directive: false, closing, selfClosing: false, name });
+    }
+    if (PREFORMATTED_ELEMENTS.has(name)) {
+      regions.push({ first: open.line + 1, last: close.line, preformatted: true });
+    } else if (RAW_TEXT_ELEMENTS.has(name)) {
+      regions.push({ first: open.line + 1, last: close.line - 1, preformatted: false });
+    }
+  }
+  for (const lineTags of tags.values()) lineTags.sort((left, right) => left.start - right.start);
+  return { tags, continuations, regions: regions.filter((region) => region.last >= region.first) };
+}
+
+function indentationOf(line) {
+  return line.length - line.trimStart().length;
+}
+
 function formatTemplate(text, options = {}) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const sourceLines = text.split(/\r?\n/);
-  const maskedLines = maskComments(normalizeTemplate(text, options).text).split(/\r?\n/);
+  const maskedText = maskComments(normalizeTemplate(text, options).text);
+  const maskedLines = maskedText.split(/\r?\n/);
+  const html = templateStructure(maskedText);
+  for (const region of html.regions) {
+    const lines = sourceLines.slice(region.first, region.last + 1).filter((line) => line.trim());
+    region.indentation = Math.min(...lines.map(indentationOf));
+  }
   const indentUnit = options.insertSpaces === false
     ? '\t'
     : ' '.repeat(Math.max(1, options.tabSize || 4));
@@ -115,15 +175,20 @@ function formatTemplate(text, options = {}) {
     if (marker === 'on') return line;
     if (!line.trim()) return '';
     const masked = maskedLines[lineIndex];
-    const tags = tagsInLine(masked);
+    const tags = html.tags.get(lineIndex) || [];
     const firstTag = tags.find((tag) => masked.slice(0, tag.start).trim() === '');
+    const continued = html.continuations.get(lineIndex);
     let lineDepth = depth;
 
-    if (firstTag && (firstTag.closing || (firstTag.directive && BRANCH_DIRECTIVES.has(firstTag.name)))) {
+    if (continued) {
+      // The rest of a tag is indented below its first line, and the end of the tag lines up with it.
+      lineDepth = continued.lineDepth + (/^\s*\/?>/.test(masked) ? 0 : 1);
+    } else if (firstTag && (firstTag.closing || (firstTag.directive && BRANCH_DIRECTIVES.has(firstTag.name)))) {
       lineDepth = Math.max(0, lineDepth - 1);
     }
 
     for (const tag of tags) {
+      tag.lineDepth = lineDepth;
       if (tag.directive) {
         if (tag.closing && BLOCK_DIRECTIVES.has(tag.name)) {
           depth = Math.max(0, depth - 1);
@@ -137,7 +202,9 @@ function formatTemplate(text, options = {}) {
       }
     }
 
-    const content = line.trimStart();
+    const region = html.regions.find((candidate) => lineIndex >= candidate.first && lineIndex <= candidate.last);
+    if (region && region.preformatted) return line;
+    const content = region ? line.slice(Math.min(region.indentation, indentationOf(line))) : line.trimStart();
     return `${indentUnit.repeat(lineDepth)}${content}`;
   });
 

@@ -72,9 +72,9 @@ class Position {
 }
 
 class Range {
-  constructor(start, end) {
-    this.start = start;
-    this.end = end;
+  constructor(start, end, endLine, endCharacter) {
+    this.start = typeof start === 'number' ? new Position(start, end) : start;
+    this.end = typeof start === 'number' ? new Position(endLine, endCharacter) : end;
   }
 }
 
@@ -125,6 +125,10 @@ class Document {
     return this.text.slice(startOffset, endOffset);
   }
 
+  lineAt(line) {
+    return { text: this.text.split('\n')[line] };
+  }
+
   offsetAt(position) {
     const lines = this.text.split('\n');
     let offset = 0;
@@ -160,6 +164,7 @@ const providers = {};
 const settings = {};
 const diagnosticEntries = new Map();
 const executedCommands = [];
+const editorCommands = {};
 let onDidOpenDocument;
 let onDidChangeDocument;
 const disposable = { dispose() {} };
@@ -179,7 +184,7 @@ const vscode = {
   Diagnostic,
   DiagnosticSeverity: { Error: 0, Warning: 1 },
   CompletionItemTag: { Deprecated: 1 },
-  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Keyword: 13, Snippet: 14, Constant: 20 },
+  CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Keyword: 13, Snippet: 14, File: 16, Folder: 18, Constant: 20 },
   FoldingRangeKind: { Comment: 1 },
   FoldingRange: class {
     constructor(start, end, kind) {
@@ -191,6 +196,23 @@ const vscode = {
   DocumentHighlight: class {
     constructor(range) {
       this.range = range;
+    }
+  },
+  SemanticTokensLegend: class {
+    constructor(tokenTypes, tokenModifiers) {
+      this.tokenTypes = tokenTypes;
+      this.tokenModifiers = tokenModifiers;
+    }
+  },
+  SemanticTokensBuilder: class {
+    constructor() {
+      this.tokens = [];
+    }
+    push(range, type, modifiers) {
+      this.tokens.push({ range, type, modifiers });
+    }
+    build() {
+      return this.tokens;
     }
   },
   DocumentLink: class {
@@ -266,7 +288,11 @@ const vscode = {
     }
   },
   commands: {
-    executeCommand: async (...args) => executedCommands.push(args)
+    executeCommand: async (...args) => executedCommands.push(args),
+    registerTextEditorCommand: (name, handler) => {
+      editorCommands[name] = handler;
+      return disposable;
+    }
   },
   window: {
     activeTextEditor: undefined
@@ -323,6 +349,11 @@ const vscode = {
       providers.rename = provider;
       return disposable;
     },
+    registerDocumentSemanticTokensProvider: (_selector, provider, legend) => {
+      providers.semanticTokens = provider;
+      providers.semanticTokensLegend = legend;
+      return disposable;
+    },
     registerSignatureHelpProvider: (_selector, provider, ...triggerCharacters) => {
       providers.signatureHelp = provider;
       providers.signatureHelpTriggerCharacters = triggerCharacters;
@@ -373,7 +404,12 @@ async function run() {
   extension.activate({ subscriptions });
   const mainUri = uri('/virtual/work/pages/main.ftl');
 
-  const applyTypedCharacter = async (text, character, insertionOffset = text.length - character.length) => {
+  const applyTypedCharacter = async (
+    text,
+    character,
+    insertionOffset = text.length - character.length,
+    expectedSelectionOffset = insertionOffset + character.length
+  ) => {
     const document = new Document(mainUri, text);
     const editor = {
       document,
@@ -392,7 +428,7 @@ async function run() {
       contentChanges: [{ rangeOffset: insertionOffset, rangeLength: 0, text: character }]
     });
     if (editor.selection) {
-      assert.strictEqual(document.offsetAt(editor.selection.active), insertionOffset + character.length);
+      assert.strictEqual(document.offsetAt(editor.selection.active), expectedSelectionOffset);
     }
     vscode.window.activeTextEditor = undefined;
     return document.getText();
@@ -406,46 +442,92 @@ async function run() {
   assert.strictEqual(await applyTypedCharacter('<section></section>', '>', '<section'.length), '<section></section>');
   assert.strictEqual(await applyTypedCharacter('<div title="a>b">', '>'), '<div title="a>b"></div>');
   assert.strictEqual(await applyTypedCharacter('<#if items[0] > 1>', '>'), '<#if items[0] > 1></#if>');
+  assert.strictEqual(
+    await applyTypedCharacter('<div><span>text</', '/', undefined, '<div><span>text</span>'.length),
+    '<div><span>text</span>'
+  );
+  assert.strictEqual(
+    await applyTypedCharacter('<#if ready><div>text</', '/', undefined, '<#if ready><div>text</div>'.length),
+    '<#if ready><div>text</div>'
+  );
+  assert.strictEqual(
+    await applyTypedCharacter('<div><#if ready>text</', '/', undefined, '<div><#if ready>text</#if>'.length),
+    '<div><#if ready>text</#if>'
+  );
+  assert.strictEqual(
+    await applyTypedCharacter('<@cards.render>text</', '/', undefined, '<@cards.render>text</@cards.render>'.length),
+    '<@cards.render>text</@cards.render>'
+  );
+  assert.strictEqual(
+    await applyTypedCharacter('<#if ready><#list items as item>text</', '/', undefined, '<#if ready><#list items as item>text</#list>'.length),
+    '<#if ready><#list items as item>text</#list>'
+  );
   settings.tagSyntax = 'squareBracket';
   assert.strictEqual(await applyTypedCharacter('[#function total]', ']'), '[#function total][/#function]');
   assert.strictEqual(await applyTypedCharacter('[#if items[0]]', ']'), '[#if items[0]][/#if]');
+  assert.strictEqual(
+    await applyTypedCharacter('[#if ready]text[/', '/', undefined, '[#if ready]text[/#if]'.length),
+    '[#if ready]text[/#if]'
+  );
   delete settings.tagSyntax;
+
+  const toggleComments = (text, selections, uriToUse = mainUri) => {
+    const commentDocument = new Document(uriToUse, text);
+    const lines = text.split('\n');
+    editorCommands['freemarker.toggleLineComment'](
+      {
+        document: commentDocument,
+        selections: selections.map(([startLine, startCharacter, endLine, endCharacter]) =>
+          new Range(startLine, startCharacter, endLine, endCharacter))
+      },
+      { replace: (range, value) => {
+        assert.strictEqual(range.end.character, lines[range.start.line].length);
+        lines[range.start.line] = value;
+      } }
+    );
+    return lines.join('\n');
+  };
+  assert.strictEqual(
+    toggleComments('<div>\n  <p>a</p>\n  <p>b</p>\n</div>', [[1, 4, 2, 3]]),
+    '<div>\n<#--   <p>a</p> -->\n<#--   <p>b</p> -->\n</div>'
+  );
+  assert.strictEqual(
+    toggleComments('<div>\n<#--   <p>a</p> -->\n<#--   <p>b</p> -->\n</div>', [[1, 0, 3, 0]]),
+    '<div>\n  <p>a</p>\n  <p>b</p>\n</div>'
+  );
+  assert.strictEqual(toggleComments('a\nb\nc', [[0, 0, 0, 0], [2, 1, 2, 1]]), '<#-- a -->\nb\n<#-- c -->');
+  assert.strictEqual(toggleComments('a\nb', [[0, 0, 1, 0], [0, 1, 1, 1]]), '<#-- a -->\n<#-- b -->');
+  assert.strictEqual(toggleComments('[#if a]\ntext\n[/#if]', [[1, 0, 1, 0]]), '[#if a]\n[#-- text --]\n[/#if]');
 
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
 
   const outlineSymbols = await providers.documentSymbols.provideDocumentSymbols(document);
-  const variableGroup = outlineSymbols.find((symbol) => symbol.name === '02 Variables');
-  const templateGroup = outlineSymbols.find((symbol) => symbol.name === '01 Imports & Includes');
-  assert(variableGroup);
-  assert(templateGroup);
-  assert(templateGroup.children.some((symbol) => symbol.name === 'cards' && symbol.detail === 'import ../lib/cards.ftl'));
-  assert(templateGroup.children.some((symbol) => symbol.name === 'shared.ftl' && symbol.detail === 'include shared.ftl'));
-  assert(!templateGroup.children.some((symbol) => symbol.name === 'hiddenNamespace'));
+  assert(outlineSymbols.every((symbol) => symbol.children.length === 0));
+  assert.deepStrictEqual(outlineSymbols.slice(0, 6).map((symbol) => [symbol.name, symbol.detail]), [
+    ['cards', 'import ../lib/cards.ftl'],
+    ['toolkit', 'import ../lib/toolkit.ftl'],
+    ['_privateCards', 'import ../lib/cards.ftl'],
+    ['shared.ftl', 'include shared.ftl'],
+    ['pageTitle', 'variable'],
+    ['greeting', 'variable']
+  ]);
   const cardsImportOffset = mainText.indexOf('as cards') + 'as '.length;
   assert.deepStrictEqual(
-    templateGroup.children.find((symbol) => symbol.name === 'cards').selectionRange.start,
+    outlineSymbols.find((symbol) => symbol.name === 'cards').selectionRange.start,
     positionAt(mainText, cardsImportOffset)
   );
-  assert(variableGroup.children.some((symbol) => symbol.name === 'pageTitle'));
-  assert(variableGroup.children.some((symbol) => symbol.name === 'settings'));
-  assert(!variableGroup.children.some((symbol) => symbol.name === 'fontSize'));
-  assert(!variableGroup.children.some((symbol) => symbol.name === 'product'));
+  assert(outlineSymbols.some((symbol) => symbol.name === 'settings'));
+  assert(!outlineSymbols.some((symbol) => ['fontSize', 'product', 'hiddenNamespace'].includes(symbol.name)));
   const cardsOutline = await providers.documentSymbols.provideDocumentSymbols(
     new Document(uri('/virtual/work/lib/cards.ftl'), files.get('/virtual/work/lib/cards.ftl'))
   );
   assert.deepStrictEqual(cardsOutline.map((symbol) => symbol.name), [
-    '01 Imports & Includes',
-    '02 Variables',
-    '03 Functions',
-    '04 Macros'
+    'nested', 'render', '_hidden', '_hiddenFunction', '_helper', 'publicHelper', 'total', 'salutation', 'theme', '_internal'
   ]);
-  const macroGroup = cardsOutline.find((symbol) => symbol.name === '04 Macros');
-  const functionGroup = cardsOutline.find((symbol) => symbol.name === '03 Functions');
-  assert(macroGroup.children.some((symbol) => symbol.name === 'render' && symbol.kind === vscode.SymbolKind.Method));
-  assert(functionGroup.children.some((symbol) => symbol.name === 'total' && symbol.kind === vscode.SymbolKind.Function));
-  assert(!macroGroup.children.some((symbol) => symbol.name === 'macroOnly'));
-  assert(!functionGroup.children.some((symbol) => symbol.name === 'functionOnly'));
+  assert.strictEqual(cardsOutline.find((symbol) => symbol.name === 'render').kind, vscode.SymbolKind.Method);
+  assert.strictEqual(cardsOutline.find((symbol) => symbol.name === 'total').kind, vscode.SymbolKind.Function);
+  assert.strictEqual(cardsOutline.find((symbol) => symbol.name === 'nested').kind, vscode.SymbolKind.Module);
 
   const invalidDocument = new Document(mainUri, '<#if ready>\n</#list>');
   onDidOpenDocument(invalidDocument);
@@ -455,6 +537,17 @@ async function run() {
   invalidDocument.text = '<#if ready>\n</#if>';
   onDidChangeDocument({ document: invalidDocument });
   assert.strictEqual(diagnosticEntries.has(mainUri.fsPath), false);
+
+  invalidDocument.text = '<section>\n<p>Ready</p>';
+  onDidChangeDocument({ document: invalidDocument });
+  assert.deepStrictEqual(
+    diagnosticEntries.get(mainUri.fsPath).map((entry) => [entry.message, entry.severity, entry.range.end.character]),
+    [['Unclosed HTML tag <section>.', vscode.DiagnosticSeverity.Warning, '<section'.length]]
+  );
+  settings.validateHtmlTags = false;
+  onDidChangeDocument({ document: invalidDocument });
+  assert.strictEqual(diagnosticEntries.has(mainUri.fsPath), false);
+  delete settings.validateHtmlTags;
 
   const unformatted = new Document(mainUri, '<#if ready>\n<p>Ready</p>\n</#if>');
   const formatEdits = providers.formatting.provideDocumentFormattingEdits(unformatted, {
@@ -754,6 +847,66 @@ async function run() {
   assert.deepStrictEqual(laterMacroArgumentCompletions, []);
   assert(providers.completionTriggerCharacters.includes(' '));
 
+  // Semantic highlighting of parameters and variables
+  assert.deepStrictEqual(providers.semanticTokensLegend.tokenTypes, ['parameter', 'variable', 'namespace', 'macro', 'function']);
+  assert.deepStrictEqual(providers.semanticTokensLegend.tokenModifiers, ['local']);
+  const coloredText = '<#include "../lib/cards.ftl">\n<#assign own = theme>\n<#macro box label>\n  <#local text = label + own>${text}\n</#macro>\n<@render title=total(own) />${nested.funcTest(1)}';
+  const coloredDocument = new Document(mainUri, coloredText);
+  const coloredTokens = await providers.semanticTokens.provideDocumentSemanticTokens(coloredDocument);
+  assert.deepStrictEqual(
+    coloredTokens.map((token) => [coloredDocument.getText(token.range), token.range.start.line, token.type, token.modifiers.join()]),
+    [
+      ['own', 1, 'variable', ''],
+      ['theme', 1, 'variable', ''],
+      ['box', 2, 'macro', ''],
+      ['label', 2, 'parameter', ''],
+      ['text', 3, 'variable', 'local'],
+      ['label', 3, 'parameter', ''],
+      ['own', 3, 'variable', ''],
+      ['text', 3, 'variable', 'local'],
+      ['render', 5, 'macro', ''],
+      ['title', 5, 'parameter', ''],
+      ['total', 5, 'function', ''],
+      ['own', 5, 'variable', ''],
+      ['nested', 5, 'namespace', ''],
+      ['funcTest', 5, 'function', '']
+    ]
+  );
+
+  // Template paths of import and include
+  const pathCompletionsAt = async (text, targetUri = mainUri) => {
+    const pathDocument = new Document(targetUri, text);
+    const items = await providers.completion.provideCompletionItems(pathDocument, pathDocument.positionAt(text.length));
+    return [...items].sort((left, right) => left.sortText.localeCompare(right.sortText));
+  };
+  const pathLabels = async (text, targetUri) => (await pathCompletionsAt(text, targetUri)).map((item) => item.label);
+  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'shared.ftl']);
+  assert.deepStrictEqual(await pathLabels("<#include '"), ['../', 'shared.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "../'), ['lib/', 'pages/']);
+  assert.deepStrictEqual(
+    await pathLabels('<#import "../lib/ca'),
+    ['cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']
+  );
+  assert.deepStrictEqual(await pathLabels('<#include "/'), []);
+  assert.deepStrictEqual(await pathLabels('<#include "/pages/'), []);
+  assert.deepStrictEqual(await pathLabels('[#import "../lib/'), [
+    'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl'
+  ]);
+  assert.deepStrictEqual(await pathLabels('<#import "../lib/cards.ftl" as '), []);
+  assert.deepStrictEqual(await pathLabels('<#assign path = "'), []);
+  const pathItems = await pathCompletionsAt('<#import "../lib/ca');
+  assert.strictEqual(pathItems[0].kind, vscode.CompletionItemKind.File);
+  assert.deepStrictEqual(pathItems[0].range.start, new Position(0, '<#import "../lib/'.length));
+  assert.strictEqual(pathItems[0].command, undefined);
+  const folderItem = (await pathCompletionsAt('<#import "'))[0];
+  assert.strictEqual(folderItem.kind, vscode.CompletionItemKind.Folder);
+  assert.strictEqual(folderItem.insertText, '../');
+  assert.strictEqual(folderItem.command.command, 'editor.action.triggerSuggest');
+  settings.templateRoots = ['lib'];
+  assert.deepStrictEqual(await pathLabels('<#import "/'), ['cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'shared.ftl', 'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
+  delete settings.templateRoots;
+
   const snippetDocument = new Document(mainUri, `${mainText}\nass`);
   const snippetCompletions = await providers.completion.provideCompletionItems(
     snippetDocument,
@@ -1019,6 +1172,42 @@ async function run() {
   const nonExistentRename = await providers.rename.provideRenameEdits(document, positionAt(mainText, 0), 'validName');
   assert.strictEqual(nonExistentRename, undefined);
 
+  // HTML tags are renamed together with their other tag
+  const htmlText = '<div class="a">\n  <div><br><#if a><p>text</p></#if></div>\n</div>\n<span>';
+  const htmlDocument = new Document(mainUri, htmlText);
+  const tagRanges = (ranges) => ranges.map((range) => [htmlDocument.offsetAt(range.start), htmlDocument.offsetAt(range.end)]);
+  const outerClose = htmlText.lastIndexOf('</div>') + 2;
+  const innerOpen = htmlText.indexOf('<div><br>') + 1;
+  const innerClose = htmlText.indexOf('</div>') + 2;
+  assert.strictEqual(providers.linkedEditing, undefined);
+  const innerTagEdits = await providers.rename.provideRenameEdits(htmlDocument, htmlDocument.positionAt(innerOpen), 'main');
+  assert.deepStrictEqual(
+    innerTagEdits.get(mainUri).map((item) => htmlDocument.offsetAt(item.range.start)),
+    [innerOpen, innerClose]
+  );
+  for (const unpaired of ['class', '<br', '<span']) {
+    const offset = htmlText.indexOf(unpaired) + unpaired.length;
+    assert.strictEqual(await providers.rename.prepareRename(htmlDocument, htmlDocument.positionAt(offset)), undefined);
+  }
+  assert.strictEqual(await providers.rename.prepareRename(htmlDocument, htmlDocument.positionAt(outerClose + 1)), undefined);
+  assert.strictEqual(
+    await providers.rename.provideRenameEdits(htmlDocument, htmlDocument.positionAt(outerClose + 1), 'section'),
+    undefined
+  );
+  assert.deepStrictEqual(
+    tagRanges([(await providers.rename.prepareRename(htmlDocument, htmlDocument.positionAt(2))).range]),
+    [[1, 4]]
+  );
+  const tagEdits = await providers.rename.provideRenameEdits(htmlDocument, htmlDocument.positionAt(2), 'section');
+  assert.deepStrictEqual(
+    tagEdits.get(mainUri).map((item) => [htmlDocument.offsetAt(item.range.start), item.newText]),
+    [[1, 'section'], [outerClose, 'section']]
+  );
+  await assert.rejects(
+    () => providers.rename.provideRenameEdits(htmlDocument, htmlDocument.positionAt(2), 'not valid'),
+    /not a valid HTML tag name/
+  );
+
   // Rename function from call site
   const totalOffset = mainText.indexOf('cards.total') + 'cards.'.length + 1;
   const totalPrepare = await providers.rename.prepareRename(document, positionAt(mainText, totalOffset));
@@ -1182,24 +1371,28 @@ async function run() {
 
   // Directives, end tags, and special variables
   assert(providers.completionTriggerCharacters.includes('#'));
+  // A typed slash only asks for template paths, end tags are completed on their own.
+  assert(providers.completionTriggerCharacters.includes('/'));
+  const slashDocument = new Document(builtinUri, '<#assign a = 1>${a/');
+  assert.deepStrictEqual(
+    await providers.completion.provideCompletionItems(slashDocument, slashDocument.positionAt(19), undefined, { triggerCharacter: '/' }),
+    []
+  );
   const directiveCompletions = await builtinCompletionsAt('<#');
   assert(directiveCompletions.some((item) => item.label === 'list' && item.kind === vscode.CompletionItemKind.Keyword));
   assert(directiveCompletions.some((item) => item.label === 'foreach' && item.tags.includes(vscode.CompletionItemTag.Deprecated)));
   assert(!directiveCompletions.some((item) => item.kind === vscode.CompletionItemKind.Snippet));
   assert((await builtinCompletionsAt('<#li')).some((item) => item.label === 'list'));
-  assert.deepStrictEqual(
-    (await builtinCompletionsAt('<#if a><#list xs as x><@box>${x}</@box><#sep>, </#')).map((item) => item.insertText),
-    ['list>', 'if>']
-  );
-  assert.deepStrictEqual(
-    (await builtinCompletionsAt('<#if a><@layout.page><@box></@')).map((item) => item.insertText),
-    ['box>', 'layout.page>']
-  );
+  assert.deepStrictEqual(await builtinCompletionsAt('<#if a><#list xs as x><#sep>text</'), []);
+  assert.deepStrictEqual(await builtinCompletionsAt('<main><section>text</'), []);
+  settings.tagSyntax = 'squareBracket';
+  assert.deepStrictEqual(await builtinCompletionsAt('[#if ready][/'), []);
+  delete settings.tagSyntax;
   assert.deepStrictEqual(await builtinCompletionsAt('<#if a></#if></#'), []);
   const closedTagDocument = new Document(builtinUri, '<#if a></#>');
   assert.deepStrictEqual(
     (await providers.completion.provideCompletionItems(closedTagDocument, new Position(0, 10))).map((item) => item.insertText),
-    ['if']
+    []
   );
 
   const specialCompletions = await builtinCompletionsAt('${.');
@@ -1331,11 +1524,8 @@ async function run() {
   const squareDirectives = await squareCompletionsAt('[#');
   assert.strictEqual(squareDirectives.find((item) => item.label === 'list').detail, '[#list sequence as item]...[#else]...[/#list]');
   assert(squareDirectives.find((item) => item.label === 'assign').documentation.value.includes('`[/#assign]`'));
-  assert.deepStrictEqual(
-    (await squareCompletionsAt('[#if a > 1][#list xs as x][@box][/@box][/#')).map((item) => [item.insertText, item.detail]),
-    [['list]', 'Close [#list]'], ['if]', 'Close [#if]']]
-  );
-  assert.deepStrictEqual((await squareCompletionsAt('[#if a][@cards.render][/@')).map((item) => item.insertText), ['cards.render]']);
+  assert.deepStrictEqual(await squareCompletionsAt('[#if a > 1][#list xs as x][@box][/@box][/#'), []);
+  assert.deepStrictEqual(await squareCompletionsAt('[#if a][@cards.render][/@'), []);
   const squareSnippets = await squareCompletionsAt('if');
   assert.strictEqual(
     squareSnippets.find((item) => item.label === 'If block').insertText.value,
@@ -1359,8 +1549,8 @@ async function run() {
   const squareReferences = await providers.references.provideReferences(squareDocument, squarePosition('pageTitle?'));
   assert.deepStrictEqual(squareReferences.map((reference) => reference.range.start.line), [4, 5, 6, 8]);
   const squareOutline = await providers.documentSymbols.provideDocumentSymbols(squareDocument);
-  assert.deepStrictEqual(squareOutline.map((group) => group.children.map((symbol) => symbol.name)), [['cards'], ['pageTitle'], ['box']]);
-  assert.deepStrictEqual(squareOutline[1].children[0].range.start, new Position(2, 0));
+  assert.deepStrictEqual(squareOutline.map((symbol) => symbol.name), ['cards', 'pageTitle', 'box']);
+  assert.deepStrictEqual(squareOutline[1].range.start, new Position(2, 0));
   assert.strictEqual((await providers.documentLinks.provideDocumentLinks(squareDocument))[0].target.fsPath, '/virtual/work/lib/cards.ftl');
 
   onDidOpenDocument(squareDocument);

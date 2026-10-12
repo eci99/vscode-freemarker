@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { templateBlocks, validateTemplate } = require('../validator');
+const { htmlTags, templateBlocks, validateTemplate } = require('../validator');
 
 assert.deepStrictEqual(validateTemplate('<#if ready>\n${value}\n</#if>'), []);
 assert.deepStrictEqual(validateTemplate('<#assign captured>text</#assign>'), []);
@@ -111,5 +111,54 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(validateTemplate('[#if a][/#if]', { tagSyntax: 'angleBracket' }), []);
 assert.deepStrictEqual(validateTemplate('<#if a>', { tagSyntax: 'squareBracket' }), []);
+
+// HTML tags
+const htmlIssues = (text, options) => validateTemplate(text, options).map((issue) => [issue.message, issue.offset, issue.length]);
+for (const valid of [
+  '<div class="a"><span>text</span><br><img src="a.png"><input /></div>',
+  '<DIV>text</div>',
+  '<!-- <div> --><#-- <div> -->${"<div>"}<#assign open = "<div>">',
+  '<script>if (a < b && c<d) { render("<div>"); }</script><style>a > b {}</style>',
+  '<div <#if active>class="active"</#if> title="a>b">text</div>',
+  '<#if wrap><div></#if>text<#if wrap></div></#if>',
+  '<#macro open><section></#macro><#macro close></section></#macro>'
+]) {
+  assert.deepStrictEqual(htmlIssues(valid), [], valid);
+}
+assert.deepStrictEqual(htmlIssues('<div>\n<span>text</span>'), [['Unclosed HTML tag <div>.', 0, 4]]);
+assert.deepStrictEqual(htmlIssues('<div><span class="a">text</div>'), [['Unclosed HTML tag <span>.', 5, 5]]);
+assert.deepStrictEqual(htmlIssues('<section><div>'), [
+  ['Unclosed HTML tag <div>.', 9, 4],
+  ['Unclosed HTML tag <section>.', 0, 8]
+]);
+assert.deepStrictEqual(htmlIssues('<#if wide><div class="wide"><#else><div></#if>text</div>'), [
+  ['Unclosed HTML tag <div>.', 10, 4]
+]);
+assert.deepStrictEqual(htmlIssues('<#if wide><div class="wide"><#else><div></#if>text</div><#if wide></div></#if>'), []);
+assert.deepStrictEqual(htmlIssues('<#if a><div>text</#if>'), [['Unclosed HTML tag <div>.', 7, 4]]);
+assert.deepStrictEqual(htmlIssues('<script>let a = 1;'), [['Unclosed HTML tag <script>.', 0, 7]]);
+assert.deepStrictEqual(htmlIssues('[#if a]<div>[#if b > 1]<span>[/#if][/#if]'), [
+  ['Unclosed HTML tag <span>.', 23, 5],
+  ['Unclosed HTML tag <div>.', 7, 4]
+]);
+assert.deepStrictEqual(
+  validateTemplate('<ul><li>one<li>two</li></ul><p>text').map((issue) => [issue.message, issue.offset, issue.severity]),
+  [['Unclosed HTML tag <li>.', 4, 'warning'], ['Unclosed HTML tag <p>.', 28, 'warning']]
+);
+assert.strictEqual(validateTemplate('<div>')[0].severity, 'warning');
+assert.deepStrictEqual(
+  validateTemplate('<p>text</p>\n</div >').map((issue) => [issue.message, issue.offset, issue.length, issue.severity]),
+  [['Unexpected closing HTML tag </div>.', 12, 7, 'warning']]
+);
+assert.deepStrictEqual(htmlIssues('<div><#if early>text</div><#else>more</div></#if>'), [
+  ['Unexpected closing HTML tag </div>.', 37, 6]
+]);
+assert.deepStrictEqual(htmlIssues('<div><span></div></span>'), [
+  ['Unclosed HTML tag <span>.', 5, 5],
+  ['Unexpected closing HTML tag </span>.', 17, 7]
+]);
+assert.deepStrictEqual(htmlIssues('</div>', { validateHtml: false }), []);
+assert.deepStrictEqual(htmlIssues('<div>', { validateHtml: false }), []);
+assert.deepStrictEqual(htmlTags('<ul><li>text').unclosed.map((tag) => tag.name), ['ul', 'li']);
 
 console.log('Template validator tests passed.');
