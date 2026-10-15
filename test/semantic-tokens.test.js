@@ -83,4 +83,14 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(describe('${shared} ${unknown}', { variables: ['shared'] }), ['shared@2:variable']);
 assert.deepStrictEqual(describe('<p title="a">${x</p>'), []);
 
+// Interpolations in strings
+assert.deepStrictEqual(describe('<#assign p = 1><@m t="x ${p}" /> ${"in ${p}"}'), [
+  'p@9:variable',
+  'm@17:macro',
+  't@19:parameter',
+  'p@26:variable',
+  'p@41:variable'
+]);
+assert.deepStrictEqual(describe('${r"${p}"}', { variables: ['p'] }), []);
+
 console.log('Semantic token tests passed.');

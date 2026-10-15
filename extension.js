@@ -12,7 +12,7 @@ const {
   specialVariableNameStart
 } = require('./directives');
 const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
-const { displayText, normalizeTemplate, toSquareBracketTags } = require('./syntax');
+const { displayText, isRawStringStart, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { analyzeExtraction, checkSelection } = require('./extract-macro');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
@@ -37,7 +37,52 @@ const autoCloseDirectives = new Set([
   'items', 'sep', 'assign', 'local', 'global'
 ]);
 
-function closingTextAfterTypedTag(document, change) {
+// Whether the offset is inside a string literal of a tag or interpolation, as in <#assign x = "|".
+// The text is in the default syntax. An interpolation in a string is an expression again.
+function isInStringLiteral(source, offset) {
+  const stack = [];
+  for (let index = 0; index < offset; index += 1) {
+    const character = source[index];
+    const top = stack[stack.length - 1];
+    if (!top) {
+      if (source.startsWith('<#--', index)) {
+        const commentEnd = source.indexOf('-->', index + 4);
+        if (commentEnd < 0 || commentEnd >= offset) return false;
+        index = commentEnd + 2;
+      } else if (/^<\/?[#@]/.test(source.slice(index, index + 3))) {
+        stack.push({ kind: 'tag', quote: null, raw: false, parentheses: 0, braces: 0 });
+      } else if ((character === '$' || character === '#') && source[index + 1] === '{') {
+        stack.push({ kind: 'interpolation', quote: null, raw: false, parentheses: 0, braces: 0 });
+        index += 1;
+      }
+    } else if (top.quote) {
+      if (character === top.quote && (top.raw || source[index - 1] !== '\\')) {
+        top.quote = null;
+      } else if (!top.raw && (character === '$' || character === '#') && source[index + 1] === '{') {
+        stack.push({ kind: 'interpolation', quote: null, raw: false, parentheses: 0, braces: 0 });
+        index += 1;
+      }
+    } else if (character === '"' || character === "'") {
+      top.quote = character;
+      top.raw = isRawStringStart(source, index);
+    } else if (character === '(') {
+      top.parentheses += 1;
+    } else if (character === ')') {
+      top.parentheses = Math.max(0, top.parentheses - 1);
+    } else if (top.kind === 'tag' && character === '>' && top.parentheses === 0) {
+      stack.pop();
+    } else if (top.kind === 'interpolation' && character === '{') {
+      top.braces += 1;
+    } else if (top.kind === 'interpolation' && character === '}') {
+      if (top.braces === 0) stack.pop();
+      else top.braces -= 1;
+    }
+  }
+  const innermost = stack[stack.length - 1];
+  return Boolean(innermost && innermost.quote);
+}
+
+function closingTextAfterTypedTag(document, change, record) {
   if (change.rangeLength !== 0 || !['>', ']'].includes(change.text)) return undefined;
   const source = document.getText();
   const cursorOffset = change.rangeOffset + change.text.length;
@@ -50,6 +95,7 @@ function closingTextAfterTypedTag(document, change) {
   if (change.text === '>' && squareStart > angleStart) return undefined;
   const tagStart = change.text === ']' ? squareStart : angleStart;
   if (tagStart < 0) return undefined;
+  if (record && isInStringLiteral(record.source, tagStart)) return undefined;
 
   const opener = change.text === ']' ? '[' : '<';
   const ending = opener === '<' ? '>' : ']';
@@ -94,6 +140,7 @@ function closingTagAfterTypedSlash(document, change, record) {
   const opener = source[change.rangeOffset - 1];
   const squareSyntax = record.tagSyntax === 'square';
   if (opener !== '<' && !(opener === '[' && squareSyntax)) return undefined;
+  if (isInStringLiteral(record.source, change.rangeOffset - 1)) return undefined;
 
   const sourceBeforeTag = record.source.slice(0, change.rangeOffset - 1);
   const candidates = htmlTags(sourceBeforeTag).unclosed.map((tag) => ({ ...tag, kind: 'html' }));
@@ -306,9 +353,20 @@ class TemplateWorkspaceIndex {
     if (localMember) return localMember;
 
     const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1), includePrivate);
-    if (!namespace) return undefined;
-    const member = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === segments[segments.length - 1]);
-    return member && (includePrivate || !this.isPrivateName(member.symbol.name)) ? member : undefined;
+    if (namespace) {
+      const member = this.includedSymbols(namespace).find(({ symbol }) => symbol.name === segments[segments.length - 1]);
+      return member && (includePrivate || !this.isPrivateName(member.symbol.name)) ? member : undefined;
+    }
+
+    // A hash of an imported template: alias.hash.key
+    for (let split = segments.length - 2; split > 0; split -= 1) {
+      const owner = this.resolveNamespaceRecord(record, segments.slice(0, split), includePrivate);
+      if (!owner) continue;
+      const hashPath = segments.slice(split).join('.');
+      const member = this.includedSymbols(owner).find(({ symbol }) => symbol.kind === 'variable' && symbol.name === hashPath);
+      return member && (includePrivate || !this.isPrivateName(segments[split])) ? member : undefined;
+    }
+    return undefined;
   }
 
   nestedVariableDeclarations(record, pathPrefix) {
@@ -608,7 +666,10 @@ class TemplateWorkspaceIndex {
         return false;
       }
     }
-    return !quote && /\s[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:[A-Za-z_][A-Za-z0-9_.]*)?$/.test(body);
+    if (quote) return false;
+    return /\s[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:[A-Za-z_][A-Za-z0-9_.]*)?$/.test(body)
+      // Inside the parentheses of a call in a value: <@macro name=function(|
+      || (/\s[A-Za-z_][A-Za-z0-9_]*\s*=/.test(body) && this.openCall(source.slice(0, offset)) !== undefined);
   }
 
   namedArguments(text, entries = []) {
@@ -897,11 +958,21 @@ class TemplateWorkspaceIndex {
 
   openCall(source) {
     const parentheses = [];
+    // What was open outside of an interpolation that is inside of a string: "text ${|"
+    const interpolations = [];
     let quote = null;
+    let braces = 0;
     for (let index = 0; index < source.length; index += 1) {
       const character = source[index];
       if (quote) {
-        if (character === quote && source[index - 1] !== '\\') quote = null;
+        if (character === quote && source[index - 1] !== '\\') {
+          quote = null;
+        } else if ((character === '$' || character === '#') && source[index + 1] === '{') {
+          interpolations.push({ quote, parentheses: parentheses.length, braces });
+          quote = null;
+          braces = 0;
+          index += 1;
+        }
         continue;
       }
       if (character === '"' || character === "'") {
@@ -910,6 +981,17 @@ class TemplateWorkspaceIndex {
         parentheses.push(index);
       } else if (character === ')') {
         parentheses.pop();
+      } else if (character === '{') {
+        braces += 1;
+      } else if (character === '}') {
+        if (braces > 0) {
+          braces -= 1;
+        } else if (interpolations.length > 0) {
+          const outer = interpolations.pop();
+          quote = outer.quote;
+          parentheses.length = outer.parentheses;
+          braces = outer.braces;
+        }
       }
     }
 
@@ -1357,6 +1439,8 @@ class TemplateWorkspaceIndex {
         if (offset >= segmentStart && offset <= segmentEnd) {
           const namespace = this.resolveNamespaceRecord(record, segments.slice(0, index + 1), true);
           if (namespace) return new vscode.Location(namespace.uri, new vscode.Position(0, 0));
+          const hash = index > 0 && this.resolveNamespaceMember(record, segments.slice(0, index + 1), true);
+          if (hash) return this.definitionLocation(hash.record, hash.symbol);
         }
         segmentStart = segmentEnd + 1;
       }
@@ -1478,7 +1562,7 @@ class TemplateWorkspaceIndex {
           );
           const member = local || (parent && this.includedSymbols(parent).find(({ symbol: item }) =>
             item.name === segments[selectedIndex]
-          ));
+          )) || this.resolveNamespaceMember(record, segments.slice(0, selectedIndex + 1), true);
           if (member) {
             symbolRecord = member.record;
             symbol = member.symbol;
@@ -1987,6 +2071,11 @@ function activate(context) {
   const validateDocument = (document) => {
     if (document.languageId !== 'freemarker') return;
     const text = document.getText();
+    // No analysis of the versions in a diff or merge editor, or of a file with unresolved conflicts.
+    if (!['file', 'untitled'].includes(document.uri.scheme) || /^<{7}(?: |$)/m.test(text)) {
+      diagnostics.delete(document.uri);
+      return;
+    }
     const publish = (issues) => {
       const entries = issues.map((issue) => new vscode.Diagnostic(
         new vscode.Range(document.positionAt(issue.offset), document.positionAt(issue.offset + issue.length)),
@@ -2110,7 +2199,7 @@ function activate(context) {
             if (applied) editor.selection = new vscode.Selection(finalCursor, finalCursor);
           });
         }
-        const closingText = closingTextAfterTypedTag(event.document, change);
+        const closingText = closingTextAfterTypedTag(event.document, change, record);
         if (!closingText) return;
         return editor.edit((editBuilder) => editBuilder.insert(cursor, closingText)).then((applied) => {
           if (applied) editor.selection = new vscode.Selection(cursor, cursor);

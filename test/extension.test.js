@@ -57,6 +57,7 @@ const files = new Map([
     '<#assign label = "Nested">'
   ].join('\n')],
   ['/virtual/work/lib/toolkit-shared.ftl', '<#macro included>included</#macro>'],
+  ['/virtual/work/lib/config.ftl', '<#assign settings = {"editor": {"fontSize": 14}}>'],
   ['/virtual/work/pages/shared.ftl', '<#macro layout>layout</#macro>'],
   ['/virtual/work/pages/caller.ftl', '<#import "../lib/cards.ftl" as cards><@cards.render title="A" className="b" /><@cards.render title="C" />']
 ]);
@@ -467,6 +468,14 @@ async function run() {
   assert.strictEqual(await applyTypedCharacter('<section>', '>'), '<section></section>');
   assert.strictEqual(await applyTypedCharacter('<#macro render>', '>'), '<#macro render></#macro>');
   assert.strictEqual(await applyTypedCharacter('<@render>', '>'), '<@render></@render>');
+
+  // No closing tags inside of strings
+  for (const inString of ['<#assign x = "<#if a>', '<#assign x = \'<div>', '<@m t="a ${b} <#list c>', '<#if a><#assign x = "</']) {
+    assert.strictEqual(await applyTypedCharacter(inString, inString.slice(-1)), inString, inString);
+  }
+  assert.strictEqual(await applyTypedCharacter('<#assign x = "a"><#if b>', '>'), '<#assign x = "a"><#if b></#if>');
+  assert.strictEqual(await applyTypedCharacter('<@m t="${f(1)}"><#if b>', '>'), '<@m t="${f(1)}"><#if b></#if>');
+  assert.strictEqual(await applyTypedCharacter('<#assign x = "${y?then(\'<p>\', \'\')}"><#if b>', '>'), '<#assign x = "${y?then(\'<p>\', \'\')}"><#if b></#if>');
   assert.strictEqual(await applyTypedCharacter('<#function total>', '>'), '<#function total></#function>');
   assert.strictEqual(await applyTypedCharacter('<img>', '>'), '<img>');
   assert.strictEqual(await applyTypedCharacter('<section></section>', '>', '<section'.length), '<section></section>');
@@ -858,6 +867,23 @@ async function run() {
   assert.strictEqual(macroArgumentCompletions[0].insertText, 'title=');
   assert.strictEqual(macroArgumentCompletions[0].kind, vscode.CompletionItemKind.Property);
   assert.strictEqual(macroArgumentCompletions[1].documentation.value, 'Default: `"button"`');
+  const macroValueFunctionDocument = new Document(mainUri, `${mainText}\n<@cards.render title=cards.total(1, `);
+  const macroValueFunctionCompletions = await providers.completion.provideCompletionItems(
+    macroValueFunctionDocument,
+    macroValueFunctionDocument.positionAt(macroValueFunctionDocument.getText().length)
+  );
+  assert(macroValueFunctionCompletions[0].documentation.value.startsWith('Arguments for total'));
+  assert(macroValueFunctionCompletions.some((item) => item.label === 'pageTitle = "Home"'));
+  // An interpolation in a string
+  for (const tail of ['<@cards.render title="${cards.total(1, ', '<#assign x = "a ${cards.total(1, ']) {
+    const stringDocument = new Document(mainUri, `${mainText}\n${tail}`);
+    const stringCompletions = await providers.completion.provideCompletionItems(
+      stringDocument,
+      stringDocument.positionAt(stringDocument.getText().length)
+    );
+    assert(stringCompletions[0].documentation.value.startsWith('Arguments for total'), tail);
+    assert(stringCompletions[0].documentation.value.includes('**`precision` = `2`**'), tail);
+  }
   const usedMacroArgumentDocument = new Document(mainUri, `${mainText}\n<@cards.render title="Hello" `);
   const unusedMacroArgumentCompletions = await providers.completion.provideCompletionItems(
     usedMacroArgumentDocument,
@@ -968,6 +994,29 @@ async function run() {
   assert.strictEqual(shownWarnings.length, 2);
   vscode.window.activeTextEditor = undefined;
 
+  // Interpolations in strings: definition and hover
+  const stringUseText = `${mainText}\n<@cards.render title="Hi \${pageTitle}" />`;
+  const stringUseDocument = new Document(mainUri, stringUseText);
+  const stringUsePosition = stringUseDocument.positionAt(stringUseText.lastIndexOf('pageTitle') + 2);
+  const stringUseDefinition = await providers.definition.provideDefinition(stringUseDocument, stringUsePosition);
+  assert.strictEqual(stringUseDocument.offsetAt(stringUseDefinition.range.start), mainText.indexOf('pageTitle ='));
+  const stringUseHover = await providers.hover.provideHover(stringUseDocument, stringUsePosition);
+  assert(stringUseHover.contents[0].value.includes('pageTitle'));
+
+  // Hashes of an imported template, used in the value of a parameter
+  const hashUseText = '<#import "../lib/config.ftl" as config>\n<@m size=config.settings.editor.fontSize />';
+  const hashUseDocument = new Document(mainUri, hashUseText);
+  const configUri = uri('/virtual/work/lib/config.ftl');
+  const configText = files.get(configUri.fsPath);
+  for (const [segment, symbolText] of [['settings', 'settings ='], ['editor', '"editor"'], ['fontSize', '"fontSize"']]) {
+    const hashPosition = hashUseDocument.positionAt(hashUseText.lastIndexOf(segment) + 1);
+    const hashDefinition = await providers.definition.provideDefinition(hashUseDocument, hashPosition);
+    assert.strictEqual(hashDefinition.uri.fsPath, configUri.fsPath, segment);
+    assert(new Document(configUri, configText).offsetAt(hashDefinition.range.start) >= configText.indexOf(symbolText.replace(/"/g, '')), segment);
+    const hashHover = await providers.hover.provideHover(hashUseDocument, hashPosition);
+    assert(hashHover, segment);
+  }
+
   // Template paths of import and include
   const pathCompletionsAt = async (text, targetUri = mainUri) => {
     const pathDocument = new Document(targetUri, text);
@@ -980,12 +1029,12 @@ async function run() {
   assert.deepStrictEqual(await pathLabels('<#import "../'), ['lib/', 'pages/']);
   assert.deepStrictEqual(
     await pathLabels('<#import "../lib/ca'),
-    ['cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']
+    ['cards.ftl', 'config.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']
   );
   assert.deepStrictEqual(await pathLabels('<#include "/'), []);
   assert.deepStrictEqual(await pathLabels('<#include "/pages/'), []);
   assert.deepStrictEqual(await pathLabels('[#import "../lib/'), [
-    'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl'
+    'cards.ftl', 'config.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl'
   ]);
   assert.deepStrictEqual(await pathLabels('<#import "../lib/cards.ftl" as '), []);
   assert.deepStrictEqual(await pathLabels('<#assign path = "'), []);
@@ -998,8 +1047,8 @@ async function run() {
   assert.strictEqual(folderItem.insertText, '../');
   assert.strictEqual(folderItem.command.command, 'editor.action.triggerSuggest');
   settings.templateRoots = ['lib'];
-  assert.deepStrictEqual(await pathLabels('<#import "/'), ['cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
-  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'caller.ftl', 'shared.ftl', 'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "/'), ['cards.ftl', 'config.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'caller.ftl', 'shared.ftl', 'cards.ftl', 'config.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
   delete settings.templateRoots;
 
   const snippetDocument = new Document(mainUri, `${mainText}\nass`);

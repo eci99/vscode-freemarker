@@ -44,15 +44,21 @@ function trailingCommentParagraph(text, declarationEnd) {
   return firstParagraph.replace(/[ \t]*\r?\n[ \t]*/g, ' ').trim() || undefined;
 }
 
+// The > that ends a tag; one inside of parentheses, as in (a > b), is an operator.
 function findTagEnd(text, start) {
   let quote = null;
+  let parentheses = 0;
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
       if (character === quote && text[index - 1] !== '\\') quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
-    } else if (character === '>') {
+    } else if (character === '(') {
+      parentheses += 1;
+    } else if (character === ')') {
+      parentheses = Math.max(0, parentheses - 1);
+    } else if (character === '>' && parentheses === 0) {
       return index;
     }
   }

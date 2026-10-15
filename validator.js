@@ -1,7 +1,7 @@
 const { findBuiltin, suggestBuiltin } = require('./builtins');
 
 const { BRANCH_PARENTS, findDirective } = require('./directives');
-const { normalizeTemplate, maskRawStrings } = require('./syntax');
+const { normalizeTemplate, maskRawStrings, stringInterpolations } = require('./syntax');
 
 // Directives that take no parameters, and those that cannot do without them.
 const NO_PARAMETERS = new Set([
@@ -17,15 +17,21 @@ function withoutComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '));
 }
 
+// The > that ends a tag; one inside of parentheses, as in (a > b), is an operator.
 function findTagEnd(text, start) {
   let quote = null;
+  let parentheses = 0;
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
       if (character === quote && text[index - 1] !== '\\') quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
-    } else if (character === '>') {
+    } else if (character === '(') {
+      parentheses += 1;
+    } else if (character === ')') {
+      parentheses = Math.max(0, parentheses - 1);
+    } else if (character === '>' && parentheses === 0) {
       return index;
     }
   }
@@ -57,12 +63,7 @@ function validateBuiltins(source, blocks) {
   const expressionPattern = /[$#]\{|<[#@][A-Za-z_]/g;
   let match;
 
-  while ((match = expressionPattern.exec(source)) !== null) {
-    const start = match.index + 2;
-    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
-    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
-    if (end < 0) continue;
-
+  const check = (start, end) => {
     let quote = null;
     for (let index = start; index < end; index += 1) {
       const character = source[index];
@@ -81,6 +82,14 @@ function validateBuiltins(source, blocks) {
         });
       }
     }
+  };
+
+  while ((match = expressionPattern.exec(source)) !== null) {
+    const start = match.index + 2;
+    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
+    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
+    if (end < 0) continue;
+    for (const range of [{ start, end }, ...stringInterpolations(source, start, end)]) check(range.start, range.end);
     expressionPattern.lastIndex = end + 1;
   }
   return diagnostics;
@@ -95,13 +104,7 @@ function validateHashes(source, blocks) {
   const closers = { '{': '}', '[': ']', '(': ')' };
   let match;
 
-  while ((match = expressionPattern.exec(source)) !== null) {
-    const start = match.index + 2;
-    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
-    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
-    if (end < 0) continue;
-    expressionPattern.lastIndex = end + 1;
-
+  const check = (start, end) => {
     const report = (message, offset, length = 1) => diagnostics.push({ message, offset, length });
     // The entry of a hash that ends at `entryEnd`.
     const checkEntry = (frame, entryEnd, isLast) => {
@@ -156,6 +159,15 @@ function validateHashes(source, blocks) {
       const unclosed = stack[stack.length - 1];
       report(`Unclosed "${unclosed.character}".`, unclosed.offset);
     }
+  };
+
+  while ((match = expressionPattern.exec(source)) !== null) {
+    const start = match.index + 2;
+    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
+    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
+    if (end < 0) continue;
+    expressionPattern.lastIndex = end + 1;
+    for (const range of [{ start, end }, ...stringInterpolations(source, start, end)]) check(range.start, range.end);
   }
   return diagnostics;
 }

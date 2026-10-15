@@ -22,6 +22,7 @@ function maskComments(text) {
 function findTagEnd(text, start) {
   let quote = null;
   let raw = false;
+  let parentheses = 0;
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
@@ -29,7 +30,11 @@ function findTagEnd(text, start) {
     } else if (character === '"' || character === "'") {
       quote = character;
       raw = isRawStringStart(text, index);
-    } else if (character === '>') {
+    } else if (character === '(') {
+      parentheses += 1;
+    } else if (character === ')') {
+      parentheses = Math.max(0, parentheses - 1);
+    } else if (character === '>' && parentheses === 0) {
       return index;
     }
   }

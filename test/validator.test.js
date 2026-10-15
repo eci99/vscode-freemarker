@@ -161,4 +161,15 @@ assert.deepStrictEqual(htmlIssues('</div>', { validateHtml: false }), []);
 assert.deepStrictEqual(htmlIssues('<div>', { validateHtml: false }), []);
 assert.deepStrictEqual(htmlTags('<ul><li>text').unclosed.map((tag) => tag.name), ['ul', 'li']);
 
+// Interpolations in strings
+assert.deepStrictEqual(
+  validateTemplate('<@m title="a ${x?foo}" /><#assign a = "${{\'k\' 1}}">').map((issue) => issue.message),
+  ['Unknown built-in ?foo.', 'Hash entry is missing ":" between key and value.']
+);
+assert.deepStrictEqual(validateTemplate('<@m title="a ${x?upper_case}" /> ${r"${x?foo}"}'), []);
+
+// A > in parentheses does not end the tag
+assert.deepStrictEqual(validateTemplate("<#function f array index default><#return (array?size>index)?then(array[index],default)/></#function>"), []);
+assert.deepStrictEqual(validateTemplate("<#if (a>b)>x</#if>"), []);
+
 console.log('Template validator tests passed.');

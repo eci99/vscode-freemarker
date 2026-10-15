@@ -128,4 +128,53 @@ function toSquareBracketTags(text) {
     .replace(/<(\/?[#@][^<>]*)>/g, '[$1]');
 }
 
-module.exports = { displayText, isRawStringStart, maskRawStrings, normalizeTemplate, resolveTagSyntax, toSquareBracketTags };
+// The offset of the } that ends an interpolation whose content starts at `start`, or -1.
+function interpolationEnd(text, start) {
+  let quote = null;
+  let raw = false;
+  let nesting = 0;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      raw = isRawStringStart(text, index);
+    } else if (character === '{') {
+      nesting += 1;
+    } else if (character === '}') {
+      if (nesting === 0) return index;
+      nesting -= 1;
+    }
+  }
+  return -1;
+}
+
+// The interpolations in the strings of text[start, end), as in "Hello ${name}", with the
+// ones inside of those. Each is { start, end }: the content and the offset of its }.
+function stringInterpolations(text, start, end) {
+  const found = [];
+  let quote = null;
+  let raw = false;
+  for (let index = start; index < end; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && (raw || text[index - 1] !== '\\')) {
+        quote = null;
+      } else if (!raw && (character === '$' || character === '#') && text[index + 1] === '{') {
+        const close = interpolationEnd(text, index + 2);
+        if (close < 0 || close >= end) break;
+        found.push({ start: index + 2, end: close }, ...stringInterpolations(text, index + 2, close));
+        index = close;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      raw = isRawStringStart(text, index);
+    }
+  }
+  return found;
+}
+
+module.exports = {
+  displayText, isRawStringStart, maskRawStrings, normalizeTemplate, resolveTagSyntax, stringInterpolations, toSquareBracketTags
+};

@@ -1,4 +1,5 @@
 const { findTagEnd, splitParameters } = require('./template-index');
+const { stringInterpolations } = require('./syntax');
 
 const KEYWORDS = new Set(['as', 'in', 'using', 'true', 'false', 'gt', 'gte', 'lt', 'lte']);
 
@@ -69,8 +70,9 @@ function identifiers(source, start, end) {
   return found;
 }
 
-// The expressions of a template: its interpolations and the parameters of its tags, as
-// { start, end, kind, name, tagStart, closing }. `kind` is '#' or '@' for tags.
+// The expressions of a template: its interpolations, the interpolations in its strings, and
+// the parameters of its tags, as { start, end, kind, name, tagStart, closing }. `kind` is '#'
+// or '@' for tags.
 function expressionRegions(source) {
   const regions = [];
   for (let index = 0; index < source.length;) {
@@ -85,15 +87,17 @@ function expressionRegions(source) {
       index += 2;
       continue;
     }
+    let region;
     if (interpolation) {
-      regions.push({ start: index + 2, end });
+      region = { start: index + 2, end };
     } else if (tag[0].length === 2) {
       const name = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(source.slice(index + 2, end));
-      if (name) regions.push({ start: index + 2 + name[0].length, end, tagStart: index, kind: tag[0][1], name: name[0] });
+      if (name) region = { start: index + 2 + name[0].length, end, tagStart: index, kind: tag[0][1], name: name[0] };
     } else {
       const name = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(source.slice(index + 3, end));
-      regions.push({ start: end, end, tagStart: index, kind: tag[0][2], name: name ? name[0] : '', closing: true });
+      region = { start: end, end, tagStart: index, kind: tag[0][2], name: name ? name[0] : '', closing: true };
     }
+    if (region) regions.push(region, ...stringInterpolations(source, region.start, region.end));
     index = end + 1;
   }
   return regions;
