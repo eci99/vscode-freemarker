@@ -69,12 +69,9 @@ function identifiers(source, start, end) {
   return found;
 }
 
-// The names of a template that is already in the default syntax, for semantic highlighting:
-// { offset, length, type: 'parameter' | 'variable' | 'namespace' | 'macro' | 'function', local }.
-// `options.variables`, `options.functions`, and `options.namespaces` are the names that
-// are declared in other templates. With `options.reportUnknown`, names that are declared
-// nowhere come back with the type 'unknown'.
-function semanticTokens(source, options = {}) {
+// The expressions of a template: its interpolations and the parameters of its tags, as
+// { start, end, kind, name, tagStart, closing }. `kind` is '#' or '@' for tags.
+function expressionRegions(source) {
   const regions = [];
   for (let index = 0; index < source.length;) {
     const interpolation = (source[index] === '$' || source[index] === '#') && source[index + 1] === '{';
@@ -99,6 +96,16 @@ function semanticTokens(source, options = {}) {
     }
     index = end + 1;
   }
+  return regions;
+}
+
+// The names of a template that is already in the default syntax, for semantic highlighting:
+// { offset, length, type: 'parameter' | 'variable' | 'namespace' | 'macro' | 'function', local }.
+// `options.variables`, `options.functions`, and `options.namespaces` are the names that
+// are declared in other templates. With `options.reportUnknown`, names that are declared
+// nowhere come back with the type 'unknown'.
+function semanticTokens(source, options = {}) {
+  const regions = expressionRegions(source);
 
   // Macros and functions have parameters and local variables of their own.
   const scopes = [];
@@ -188,7 +195,7 @@ function semanticTokens(source, options = {}) {
       } else if (region.kind === '@' && isArgument) {
         tokens.push({ ...token, type: 'parameter', local: false });
       } else if (scope && scope.parameters.has(name)) {
-        tokens.push({ ...token, type: 'parameter', local: false });
+        tokens.push({ ...token, type: 'variable', local: true });
       } else if (scope ? scope.locals.has(name) : topLevelLocals.has(name)) {
         tokens.push({ ...token, type: 'variable', local: true });
       } else if (assigned.has(name)) {
@@ -203,4 +210,4 @@ function semanticTokens(source, options = {}) {
   return tokens.sort((left, right) => left.offset - right.offset);
 }
 
-module.exports = { semanticTokens };
+module.exports = { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens };

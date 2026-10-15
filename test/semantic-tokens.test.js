@@ -13,24 +13,24 @@ assert.deepStrictEqual(
   describe('<#macro card title size=1><#local label = title + size>${label} ${title?upper_case} ${page.title}</#macro>${title}${label}'),
   [
     'card@8:macro',
-    'title@13:parameter',
-    'size@19:parameter',
+    'title@13:variable.local',
+    'size@19:variable.local',
     'label@34:variable.local',
-    'title@42:parameter',
-    'size@50:parameter',
+    'title@42:variable.local',
+    'size@50:variable.local',
     'label@57:variable.local',
-    'title@66:parameter'
+    'title@66:variable.local'
   ]
 );
 assert.deepStrictEqual(describe('<#function sum a b...><#return a + b[0] + sum(a, b)></#function>'), [
   'sum@11:function',
-  'a@15:parameter',
-  'b@17:parameter',
-  'a@31:parameter',
-  'b@35:parameter',
+  'a@15:variable.local',
+  'b@17:variable.local',
+  'a@31:variable.local',
+  'b@35:variable.local',
   'sum@42:function',
-  'a@46:parameter',
-  'b@49:parameter'
+  'a@46:variable.local',
+  'b@49:variable.local'
 ]);
 assert.deepStrictEqual(describe('<#assign n = 3><#list 1..n as i>${i}<#if i gt n>${n}</#if></#list>'), [
   'n@9:variable',

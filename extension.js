@@ -11,7 +11,7 @@ const {
   findSpecialVariable,
   specialVariableNameStart
 } = require('./directives');
-const { semanticTokens } = require('./semantic-tokens');
+const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
 const { displayText, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
@@ -1059,10 +1059,129 @@ class TemplateWorkspaceIndex {
     return [...templateDirectives, ...declarations].sort((left, right) => offsetOf(left) - offsetOf(right));
   }
 
+  // The parameters of the macros and functions of a template: where each is declared and
+  // where it is used in the body.
+  parameters(record) {
+    const { source } = record;
+    const regions = expressionRegions(source);
+    const namePattern = /^([A-Za-z_][A-Za-z0-9_]*)(?:\.\.\.|=[\s\S]*)?$/;
+    return templateBlocks(source, { tagSyntax: 'angleBracket' }).blocks
+      .filter((block) => block.kind === 'directive' && (block.name === 'macro' || block.name === 'function'))
+      .flatMap((block) => {
+        const tag = source.slice(block.open.offset, block.open.offset + block.open.length);
+        const header = /^<#(?:macro|function)\s+[A-Za-z_][A-Za-z0-9_.-]*/.exec(tag);
+        if (!header) return [];
+
+        const text = tag.slice(header[0].length, -1);
+        const tokens = [];
+        let start = -1;
+        let quote = null;
+        let nesting = 0;
+        for (let index = 0; index <= text.length; index += 1) {
+          const character = text[index];
+          if (quote) {
+            if (character === quote && text[index - 1] !== '\\') quote = null;
+            continue;
+          }
+          if (character === '"' || character === "'") {
+            quote = character;
+          } else if (character === '(' || character === '[' || character === '{') {
+            nesting += 1;
+          } else if (character === ')' || character === ']' || character === '}') {
+            nesting = Math.max(0, nesting - 1);
+          }
+          if (index === text.length || (/\s/.test(character) && nesting === 0)) {
+            if (start >= 0) tokens.push({ text: text.slice(start, index).replace(/,$/, ''), start });
+            start = -1;
+          } else if (start < 0) {
+            start = index;
+          }
+        }
+
+        const params = [];
+        for (let index = 0; index < tokens.length; index += 1) {
+          const match = namePattern.exec(tokens[index].text);
+          if (!match) continue;
+          params.push({
+            name: match[1],
+            offset: block.open.offset + header[0].length + tokens[index].start,
+            length: match[1].length
+          });
+          // The rest of a default value that has spaces in it.
+          while (tokens[index].text.includes('=') && index + 1 < tokens.length && !namePattern.test(tokens[index + 1].text)) {
+            index += 1;
+          }
+        }
+
+        const bodyStart = block.open.offset + block.open.length;
+        const uses = [];
+        for (const region of regions) {
+          if (region.start < bodyStart || region.start >= block.close.offset) continue;
+          if (!(region.kind === undefined || region.kind === '@' || EXPRESSION_DIRECTIVES.has(region.name))) continue;
+          for (const { name, offset, member, assigned } of identifiers(source, region.start, region.end)) {
+            if (!member && !assigned && params.some((param) => param.name === name)) {
+              uses.push({ name, offset, length: name.length });
+            }
+          }
+        }
+        return [{ params, uses, owner: record.symbols.find((symbol) =>
+          (symbol.kind === 'macro' || symbol.kind === 'function')
+          && symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length) }];
+      });
+  }
+
+  // The named arguments with the name of the parameter in the calls of its macro.
+  async namedArgumentRanges(document, parameter) {
+    if (!parameter.owner || parameter.owner.kind !== 'macro') return [];
+    const calls = await this.references(document, document.positionAt(parameter.owner.offset));
+    const ranges = [];
+    for (const call of calls) {
+      const record = this.records.get(this.key(call.uri));
+      if (!record) continue;
+      const callDocument = await vscode.workspace.openTextDocument(call.uri);
+      const afterName = callDocument.offsetAt(call.range.end);
+      const tagEnd = findTagEnd(record.source, afterName);
+      if (tagEnd < 0) continue;
+      const entries = [];
+      this.namedArguments(record.source.slice(afterName, tagEnd), entries);
+      for (const { name, offset } of entries) {
+        if (name !== parameter.name) continue;
+        ranges.push({
+          uri: call.uri,
+          range: new vscode.Range(
+            callDocument.positionAt(afterName + offset),
+            callDocument.positionAt(afterName + offset + name.length)
+          )
+        });
+      }
+    }
+    return ranges;
+  }
+
+  // The parameter that is declared or used at the offset.
+  parameterAt(record, offset) {
+    for (const scope of this.parameters(record)) {
+      for (const param of scope.params) {
+        const uses = scope.uses.filter((use) => use.name === param.name);
+        const hit = [param, ...uses].find((item) => offset >= item.offset && offset <= item.offset + item.length);
+        if (hit) return { name: param.name, declaration: param, uses, hit, owner: scope.owner };
+      }
+    }
+    return undefined;
+  }
+
   async definition(document, position) {
     await this.ready;
     const record = this.currentRecord(document);
     const offset = document.offsetAt(position);
+    const parameter = this.parameterAt(record, offset);
+    if (parameter) {
+      const locate = (item) => new vscode.Location(document.uri, new vscode.Range(
+        document.positionAt(item.offset), document.positionAt(item.offset + item.length)
+      ));
+      if (parameter.hit !== parameter.declaration) return locate(parameter.declaration);
+      return parameter.uses.length ? parameter.uses.map(locate) : undefined;
+    }
     const declaredCallable = record.symbols.find((symbol) =>
       (symbol.kind === 'macro' || symbol.kind === 'function')
       && offset >= symbol.offset
@@ -1309,6 +1428,13 @@ class TemplateWorkspaceIndex {
   }
 
   async references(document, position) {
+    await this.ready;
+    const parameter = this.parameterAt(this.currentRecord(document), document.offsetAt(position));
+    if (parameter) {
+      return parameter.uses.map((use) => new vscode.Location(document.uri, new vscode.Range(
+        document.positionAt(use.offset), document.positionAt(use.offset + use.length)
+      )));
+    }
     const target = await this.symbolAt(document, position);
     if (!target) return [];
 
@@ -1413,6 +1539,14 @@ class TemplateWorkspaceIndex {
     }
 
     await this.ready;
+    const parameter = this.parameterAt(this.currentRecord(document), document.offsetAt(position));
+    if (parameter) {
+      const { offset, length } = parameter.hit;
+      return {
+        range: new vscode.Range(document.positionAt(offset), document.positionAt(offset + length)),
+        placeholder: parameter.name
+      };
+    }
     const target = await this.symbolAt(document, position);
     if (!target) return undefined;
 
@@ -1468,6 +1602,19 @@ class TemplateWorkspaceIndex {
     }
 
     await this.ready;
+    const parameter = this.parameterAt(this.currentRecord(document), document.offsetAt(position));
+    if (parameter) {
+      const parameterEdit = new vscode.WorkspaceEdit();
+      for (const { offset, length } of [parameter.declaration, ...parameter.uses]) {
+        parameterEdit.replace(document.uri, new vscode.Range(
+          document.positionAt(offset), document.positionAt(offset + length)
+        ), newName);
+      }
+      for (const { uri: callUri, range } of await this.namedArgumentRanges(document, parameter)) {
+        parameterEdit.replace(callUri, range, newName);
+      }
+      return parameterEdit;
+    }
     const target = await this.symbolAt(document, position);
     if (!target) return undefined;
 

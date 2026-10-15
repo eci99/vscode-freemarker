@@ -57,7 +57,8 @@ const files = new Map([
     '<#assign label = "Nested">'
   ].join('\n')],
   ['/virtual/work/lib/toolkit-shared.ftl', '<#macro included>included</#macro>'],
-  ['/virtual/work/pages/shared.ftl', '<#macro layout>layout</#macro>']
+  ['/virtual/work/pages/shared.ftl', '<#macro layout>layout</#macro>'],
+  ['/virtual/work/pages/caller.ftl', '<#import "../lib/cards.ftl" as cards><@cards.render title="A" className="b" /><@cards.render title="C" />']
 ]);
 
 function uri(fsPath) {
@@ -859,9 +860,9 @@ async function run() {
       ['own', 1, 'variable', ''],
       ['theme', 1, 'variable', ''],
       ['box', 2, 'macro', ''],
-      ['label', 2, 'parameter', ''],
+      ['label', 2, 'variable', 'local'],
       ['text', 3, 'variable', 'local'],
-      ['label', 3, 'parameter', ''],
+      ['label', 3, 'variable', 'local'],
       ['own', 3, 'variable', ''],
       ['text', 3, 'variable', 'local'],
       ['render', 5, 'macro', ''],
@@ -873,6 +874,22 @@ async function run() {
     ]
   );
 
+  // Parameters of a macro: definition, references, and rename inside the macro
+  const labelDeclaration = coloredText.indexOf('label>');
+  const labelUse = coloredText.indexOf('label + own');
+  const parameterDefinition = await providers.definition.provideDefinition(coloredDocument, coloredDocument.positionAt(labelUse));
+  assert.strictEqual(coloredDocument.offsetAt(parameterDefinition.range.start), labelDeclaration);
+  const parameterReferences = await providers.references.provideReferences(coloredDocument, coloredDocument.positionAt(labelDeclaration), {});
+  assert.deepStrictEqual(parameterReferences.map(({ range }) => coloredDocument.offsetAt(range.start)), [labelUse]);
+  const parameterPrepare = await providers.rename.prepareRename(coloredDocument, coloredDocument.positionAt(labelUse));
+  assert.strictEqual(parameterPrepare.placeholder, 'label');
+  const parameterEdits = await providers.rename.provideRenameEdits(coloredDocument, coloredDocument.positionAt(labelUse), 'caption');
+  assert.deepStrictEqual(
+    parameterEdits.get(mainUri).map((edit) => coloredDocument.offsetAt(edit.range.start)).sort((a, b) => a - b),
+    [labelDeclaration, labelUse]
+  );
+  assert(parameterEdits.get(mainUri).every((edit) => edit.newText === 'caption'));
+
   // Template paths of import and include
   const pathCompletionsAt = async (text, targetUri = mainUri) => {
     const pathDocument = new Document(targetUri, text);
@@ -880,8 +897,8 @@ async function run() {
     return [...items].sort((left, right) => left.sortText.localeCompare(right.sortText));
   };
   const pathLabels = async (text, targetUri) => (await pathCompletionsAt(text, targetUri)).map((item) => item.label);
-  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'shared.ftl']);
-  assert.deepStrictEqual(await pathLabels("<#include '"), ['../', 'shared.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'caller.ftl', 'shared.ftl']);
+  assert.deepStrictEqual(await pathLabels("<#include '"), ['../', 'caller.ftl', 'shared.ftl']);
   assert.deepStrictEqual(await pathLabels('<#import "../'), ['lib/', 'pages/']);
   assert.deepStrictEqual(
     await pathLabels('<#import "../lib/ca'),
@@ -904,7 +921,7 @@ async function run() {
   assert.strictEqual(folderItem.command.command, 'editor.action.triggerSuggest');
   settings.templateRoots = ['lib'];
   assert.deepStrictEqual(await pathLabels('<#import "/'), ['cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
-  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'shared.ftl', 'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
+  assert.deepStrictEqual(await pathLabels('<#import "'), ['../', 'caller.ftl', 'shared.ftl', 'cards.ftl', 'nested.ftl', 'toolkit-shared.ftl', 'toolkit.ftl']);
   delete settings.templateRoots;
 
   const snippetDocument = new Document(mainUri, `${mainText}\nass`);
@@ -1043,7 +1060,7 @@ async function run() {
     positionAt(mainText, memberOffset),
     { includeDeclaration: true }
   );
-  assert.strictEqual(renderReferences.length, 2);
+  assert.strictEqual(renderReferences.length, 4);
 
   const functionDeclarationOffset = cardsText.indexOf('total items') + 1;
   const functionReferences = await providers.references.provideReferences(
@@ -1108,7 +1125,7 @@ async function run() {
     cardsDocument.positionAt(macroDeclarationOffset)
   );
   assert(Array.isArray(macroDeclarationNavigation));
-  assert.strictEqual(macroDeclarationNavigation.length, 2);
+  assert.strictEqual(macroDeclarationNavigation.length, 4);
 
   const functionDeclarationNavigation = await providers.definition.provideDefinition(
     cardsDocument,
@@ -1145,6 +1162,18 @@ async function run() {
   assert(renderEdits.has(mainUri));
   assert.strictEqual(renderEdits.get(mainUri).length, 2);
   assert(renderEdits.get(mainUri).every((edit) => edit.newText === 'displayCard'));
+
+  // Renaming a parameter of a macro renames the named arguments of its calls
+  const titleParameterOffset = cardsText.indexOf('title className') + 1;
+  const titleParameterEdits = await providers.rename.provideRenameEdits(cardsDocument, cardsDocument.positionAt(titleParameterOffset), 'heading');
+  assert.strictEqual(titleParameterEdits.get(cardsUri).length, 1);
+  const callerUri = uri('/virtual/work/pages/caller.ftl');
+  const callerText = files.get(callerUri.fsPath);
+  assert.deepStrictEqual(
+    titleParameterEdits.get(callerUri).map((edit) => edit.range.start.character),
+    [callerText.indexOf('title="A"'), callerText.indexOf('title="C"')]
+  );
+  assert(titleParameterEdits.get(callerUri).every((edit) => edit.newText === 'heading'));
 
   const sharedUri = uri('/virtual/work/pages/shared.ftl');
   const sharedText = files.get(sharedUri.fsPath);
