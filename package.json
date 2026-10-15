@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker IntelliSense",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -37,13 +37,19 @@
       "properties": {
         "freemarker.templateRoots": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional workspace-relative directories searched when resolving template paths."
         },
         "freemarker.tagSyntax": {
           "type": "string",
-          "enum": ["auto", "angleBracket", "squareBracket"],
+          "enum": [
+            "auto",
+            "angleBracket",
+            "squareBracket"
+          ],
           "enumDescriptions": [
             "The first FreeMarker tag of a template decides.",
             "Tags are written as <#if x>...</#if>.",
@@ -54,7 +60,11 @@
         },
         "freemarker.interpolationSyntax": {
           "type": "string",
-          "enum": ["legacy", "dollar", "squareBracket"],
+          "enum": [
+            "legacy",
+            "dollar",
+            "squareBracket"
+          ],
           "enumDescriptions": [
             "${x} and #{x} are interpolations.",
             "Only ${x} is an interpolation.",
@@ -72,6 +82,11 @@
           "type": "boolean",
           "default": true,
           "description": "Warn about HTML tags that are never closed and about closing HTML tags without a start tag. Turn this off if the templates produce something other than HTML."
+        },
+        "freemarker.validateUndeclaredNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about names that are declared neither in the template nor in the templates it includes or imports. Turn this off if the templates use many names from the data model."
         },
         "freemarker.privatePrefix": {
           "type": "string",
@@ -118,12 +133,24 @@
       {
         "language": "freemarker",
         "scopes": {
-          "namespace": ["entity.name.namespace.freemarker"],
-          "macro": ["entity.name.function.macro.freemarker"],
-          "function": ["entity.name.function.freemarker"],
-          "parameter": ["variable.parameter.freemarker"],
-          "variable": ["variable.other.readwrite.freemarker"],
-          "variable.local": ["variable.other.constant.freemarker"]
+          "namespace": [
+            "entity.name.namespace.freemarker"
+          ],
+          "macro": [
+            "entity.name.function.macro.freemarker"
+          ],
+          "function": [
+            "entity.name.function.freemarker"
+          ],
+          "parameter": [
+            "variable.parameter.freemarker"
+          ],
+          "variable": [
+            "variable.other.readwrite.freemarker"
+          ],
+          "variable.local": [
+            "variable.other.constant.freemarker"
+          ]
         }
       }
     ],

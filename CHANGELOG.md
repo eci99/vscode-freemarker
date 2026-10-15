@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.3 - 2026-10-16
+
+Added
+
+- Warnings for names that are declared neither in the template nor in the ones it includes or imports. They are left out if one of those templates cannot be found, and the setting `freemarker.validateUndeclaredNames` turns them off
+- Errors for unknown directives, for directives with missing or unexpected parameters (`<#else x>`, `<#if>`, `<#import "a.ftl">` without `as`), and for arguments that a macro has no parameter for
+- Errors in hash literals and brackets: missing `:` or `,`, missing keys or values, empty entries, and unclosed or mismatched `(`, `[`, `{`
+- Macro and function parameters are treated as local variables: Go to Definition, Find All References, and Rename Symbol work on them, including the named arguments of calls
+- Completion only offers what is visible at the cursor: loop variables inside their loop, and parameters and local variables inside their macro or function. The keys of a hash are offered after its name and a dot, also for `alias.hash.` of an imported template
+- **Extract to Macro** (code action and command): moves the selection into a new macro that is called in its place, with the local names it uses as parameters
+- **Surround with `<#list>`** and **Surround with `<#if>`** as code actions for selections of whole lines
+- Raw string literals (`r"C:\path"`) are highlighted and analyzed correctly
+- Interpolations inside string literals, such as `"${name?trim}"`, are checked for unknown built-ins and hash errors
+
+Changed
+
+- Format Document lines up an end tag with its start tag and indents the entries of multi-line hashes and sequences like JSON
+- Automatic closing pairs are enabled in FreeMarker templates by default (`editor.autoClosingPairs`: `always`)
+
+Fixed
+
+- No automatic end tag is inserted when typing `>` inside a string literal
+- A `>` inside parentheses, as in `<#if (a > b)>`, no longer ends the tag
+- Diff and merge editors, and files with unresolved merge conflicts, are no longer analyzed, so they get no diagnostics
+
 ## 0.1.2 - 2026-10-12
 
 Added
