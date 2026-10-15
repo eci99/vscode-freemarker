@@ -13,6 +13,7 @@ const {
 } = require('./directives');
 const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
 const { displayText, normalizeTemplate, toSquareBracketTags } = require('./syntax');
+const { analyzeExtraction, checkSelection } = require('./extract-macro');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
 
@@ -386,6 +387,149 @@ class TemplateWorkspaceIndex {
         && !loopPattern.test(symbol.declaration || ''))
       .map((symbol) => ({ symbol, record }));
     return [...scoped, ...parameters, ...locals];
+  }
+
+  // The names that only exist where the selection is: parameters of the macro or function,
+  // loop variables, and local variables.
+  visibleLocals(record, start, end) {
+    const names = new Set();
+    const blocks = templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks;
+    const encloses = (block) => block.open.offset + block.open.length <= start && block.close.offset >= end;
+    for (const scope of this.parameters(record)) {
+      if (encloses(scope.block)) scope.params.forEach(({ name }) => names.add(name));
+    }
+    const enclosing = blocks.filter(encloses);
+    for (const symbol of record.symbols) {
+      if (symbol.kind !== 'variable') continue;
+      if (/^[<[]#(?:list|items)\b/.test(symbol.declaration || '')) {
+        if (enclosing.some((block) => symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length)) {
+          names.add(symbol.name);
+        }
+      } else if (symbol.topLevel === false && symbol.offset < start && enclosing.some((block) =>
+        (block.name === 'macro' || block.name === 'function')
+        && symbol.offset > block.open.offset && symbol.offset < block.close.offset)) {
+        names.add(symbol.name);
+      }
+    }
+    return names;
+  }
+
+  // Moves the selected part of a template into a new macro that is called in its place.
+  async extractMacro(document, range) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const text = document.getText();
+    const { start, end } = this.wholeLines(text, document.offsetAt(range.start), document.offsetAt(range.end));
+
+    const analysis = analyzeExtraction(record.source, start, end, this.visibleLocals(record, start, end));
+    if (analysis.error) {
+      vscode.window.showWarningMessage(`Extract to macro: ${analysis.error}`);
+      return;
+    }
+    const taken = new Set(this.includedSymbols(record).map(({ symbol }) => symbol.name));
+    const name = await vscode.window.showInputBox({
+      prompt: 'Name of the new macro',
+      validateInput: (value) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
+        ? 'Use letters, digits, and underscores, and do not start with a digit.'
+        : taken.has(value) ? `"${value}" is already defined.` : undefined
+    });
+    if (!name) return;
+
+    const options = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document === document
+      ? vscode.window.activeTextEditor.options : {};
+    const unit = options.insertSpaces === false ? '\t' : ' '.repeat(Math.max(1, Number(options.tabSize) || 4));
+    const newline = text.includes('\r\n') ? '\r\n' : '\n';
+
+    // Whole lines are replaced together with their indentation.
+    const { lineStart, lineEnd, indent, wholeLines } = this.lineLayout(text, start, end);
+
+    const call = this.tagText(record, `<@${name}${analysis.parameters.map((parameter) => ` ${parameter}=${parameter}`).join('')} />`);
+    const replaceStart = wholeLines ? lineStart : start;
+    const replaceEnd = wholeLines ? lineEnd : end;
+
+    const lines = text.slice(start, end).split(/\r?\n/);
+    const rest = lines.slice(1).filter((line) => line.trim());
+    const restIndent = rest.length ? Math.min(...rest.map((line) => line.length - line.trimStart().length)) : 0;
+    const base = wholeLines ? Math.min(indent.length, restIndent) : restIndent;
+    const body = lines.map((line, index) => line.trim()
+      ? unit + (index === 0 ? line : line.slice(Math.min(base, line.length - line.trimStart().length)))
+      : '').join(newline);
+    const definition = [
+      this.tagText(record, `<#macro ${name}${analysis.parameters.map((parameter) => ` ${parameter}`).join('')}>`),
+      body,
+      this.tagText(record, '</#macro>')
+    ].join(newline);
+
+    // After the macro or function that contains the selection, otherwise at the end.
+    const container = templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks
+      .filter((block) => block.kind === 'directive' && (block.name === 'macro' || block.name === 'function')
+        && block.open.offset + block.open.length <= start && block.close.offset >= end)
+      .sort((left, right) => left.open.offset - right.open.offset)[0];
+    const insertAt = container ? container.close.offset + container.close.length : text.length;
+    const separator = container || !text.endsWith('\n') ? newline + newline : newline;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(document.positionAt(replaceStart), document.positionAt(replaceEnd)),
+      wholeLines ? indent + call : call);
+    edit.insert(document.uri, document.positionAt(insertAt), `${separator}${definition}${container ? '' : newline}`);
+    await vscode.workspace.applyEdit(edit);
+  }
+
+  // The selection widened to the whole lines it touches, without the indentation of the
+  // first line and the whitespace after the last. A selection that ends at the start of a
+  // line does not include that line.
+  wholeLines(text, start, end) {
+    if (end > start && text[end - 1] === '\n') end -= text[end - 2] === '\r' ? 2 : 1;
+    const layout = this.lineLayout(text, start, end);
+    start = layout.lineStart;
+    end = layout.lineEnd;
+    while (start < end && /\s/.test(text[start])) start += 1;
+    while (end > start && /\s/.test(text[end - 1])) end -= 1;
+    return { start, end };
+  }
+
+  // Where the lines of a selection are, and whether it covers them completely.
+  lineLayout(text, start, end) {
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = text.indexOf('\n', end);
+    if (lineEnd < 0) lineEnd = text.length;
+    if (text[lineEnd - 1] === '\r') lineEnd -= 1;
+    const indent = text.slice(lineStart, start);
+    return { lineStart, lineEnd, indent, wholeLines: !indent.trim() && !text.slice(end, lineEnd).trim() };
+  }
+
+  // Wraps the selection in <#list> or <#if>; what is missing in the opening tag is a snippet placeholder.
+  async surroundWith(document, range, directive) {
+    await this.ready;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document !== document) return;
+    const record = this.currentRecord(document);
+    const text = document.getText();
+    const { start, end } = this.wholeLines(text, document.offsetAt(range.start), document.offsetAt(range.end));
+
+    const checked = checkSelection(record.source, start, end);
+    if (checked.error) {
+      vscode.window.showWarningMessage(`Surround with <#${directive}>: ${checked.error}`);
+      return;
+    }
+    const options = editor.options || {};
+    const unit = options.insertSpaces === false ? '\t' : ' '.repeat(Math.max(1, Number(options.tabSize) || 4));
+    const newline = text.includes('\r\n') ? '\r\n' : '\n';
+    const escape = (value) => value.replace(/[\\$}]/g, '\\$&');
+    const openTag = this.tagText(record, directive === 'list' ? '<#list ${1:items} as ${2:item}>' : '<#if ${1:condition}>');
+    const closeTag = this.tagText(record, `</#${directive}>`);
+
+    const { lineStart, lineEnd, indent, wholeLines } = this.lineLayout(text, start, end);
+    let snippet;
+    let target;
+    if (wholeLines) {
+      const body = text.slice(lineStart, lineEnd).split(/\r?\n/).map((line) => (line.trim() ? unit + escape(line) : ''));
+      snippet = `${indent}${openTag}${newline}${body.join(newline)}${newline}${indent}${closeTag}`;
+      target = new vscode.Range(document.positionAt(lineStart), document.positionAt(lineEnd));
+    } else {
+      snippet = `${openTag}${escape(text.slice(start, end))}${closeTag}`;
+      target = new vscode.Range(document.positionAt(start), document.positionAt(end));
+    }
+    await editor.insertSnippet(new vscode.SnippetString(snippet), target);
   }
 
   macroArgumentCompletions(record, source, cursorOffset) {
@@ -1126,7 +1270,7 @@ class TemplateWorkspaceIndex {
         }
         return [{ params, uses, owner: record.symbols.find((symbol) =>
           (symbol.kind === 'macro' || symbol.kind === 'function')
-          && symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length) }];
+          && symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length), block }];
       });
   }
 
@@ -1902,6 +2046,35 @@ function activate(context) {
     }),
     vscode.languages.registerWorkspaceSymbolProvider({
       provideWorkspaceSymbols: (query) => index.workspaceSymbols(query)
+    }),
+    vscode.languages.registerCodeActionsProvider({ language: 'freemarker' }, {
+      provideCodeActions: (document, range) => {
+        if (range.isEmpty) return [];
+        const action = new vscode.CodeAction('Extract to macro', vscode.CodeActionKind.RefactorExtract);
+        action.command = { command: 'freemarker.extractMacro', title: 'Extract to macro', arguments: [document, range] };
+        const surround = ['list', 'if'].map((directive) => {
+          const surroundAction = new vscode.CodeAction(`Surround with <#${directive}>`, vscode.CodeActionKind.RefactorRewrite);
+          surroundAction.command = {
+            command: 'freemarker.surroundWith',
+            title: surroundAction.title,
+            arguments: [document, range, directive]
+          };
+          return surroundAction;
+        });
+        return [action, ...surround];
+      }
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.RefactorExtract, vscode.CodeActionKind.RefactorRewrite] }),
+    vscode.commands.registerCommand('freemarker.surroundWith', (document, range, directive) => {
+      const editor = vscode.window.activeTextEditor;
+      const target = document ?? (editor && editor.document);
+      const selection = range ?? (editor && editor.selection);
+      if (target && selection) return index.surroundWith(target, selection, directive ?? 'if');
+    }),
+    vscode.commands.registerCommand('freemarker.extractMacro', (document, range) => {
+      const editor = vscode.window.activeTextEditor;
+      const target = document ?? (editor && editor.document);
+      const selection = range ?? (editor && editor.selection);
+      if (target && selection) return index.extractMacro(target, selection);
     }),
     vscode.languages.registerFoldingRangeProvider({ language: 'freemarker' }, {
       provideFoldingRanges: (document) => index.foldingRanges(document)

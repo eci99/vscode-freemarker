@@ -77,6 +77,10 @@ class Range {
     this.start = typeof start === 'number' ? new Position(start, end) : start;
     this.end = typeof start === 'number' ? new Position(endLine, endCharacter) : end;
   }
+
+  get isEmpty() {
+    return this.start.line === this.end.line && this.start.character === this.end.character;
+  }
 }
 
 class Location {
@@ -166,6 +170,10 @@ const settings = {};
 const diagnosticEntries = new Map();
 const executedCommands = [];
 const editorCommands = {};
+const registeredCommands = {};
+const appliedEdits = [];
+const shownWarnings = [];
+let inputName;
 let onDidOpenDocument;
 let onDidChangeDocument;
 const disposable = { dispose() {} };
@@ -187,6 +195,13 @@ const vscode = {
   CompletionItemTag: { Deprecated: 1 },
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Keyword: 13, Snippet: 14, File: 16, Folder: 18, Constant: 20 },
   FoldingRangeKind: { Comment: 1 },
+  CodeActionKind: { RefactorExtract: 'refactor.extract', RefactorRewrite: 'refactor.rewrite' },
+  CodeAction: class {
+    constructor(title, kind) {
+      this.title = title;
+      this.kind = kind;
+    }
+  },
   FoldingRange: class {
     constructor(start, end, kind) {
       this.start = start;
@@ -242,6 +257,9 @@ const vscode = {
       if (!this._edits.has(key)) this._edits.set(key, []);
       this._edits.get(key).push({ range, newText });
     }
+    insert(targetUri, position, newText) {
+      this.replace(targetUri, new Range(position, position), newText);
+    }
     has(targetUri) {
       return this._edits.has(targetUri.fsPath);
     }
@@ -290,13 +308,19 @@ const vscode = {
   },
   commands: {
     executeCommand: async (...args) => executedCommands.push(args),
+    registerCommand: (name, handler) => {
+      registeredCommands[name] = handler;
+      return disposable;
+    },
     registerTextEditorCommand: (name, handler) => {
       editorCommands[name] = handler;
       return disposable;
     }
   },
   window: {
-    activeTextEditor: undefined
+    activeTextEditor: undefined,
+    showInputBox: async () => inputName,
+    showWarningMessage: (message) => shownWarnings.push(message)
   },
   workspace: {
     workspaceFolders: [{ uri: uri('/virtual/work') }],
@@ -307,6 +331,7 @@ const vscode = {
     },
     getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
     onDidChangeConfiguration: () => disposable,
+    applyEdit: async (edit) => appliedEdits.push(edit),
     openTextDocument: async (targetUri) => new Document(targetUri, files.get(targetUri.fsPath)),
     onDidChangeTextDocument: (listener) => {
       onDidChangeDocument = listener;
@@ -375,6 +400,10 @@ const vscode = {
     },
     registerFoldingRangeProvider: (_selector, provider) => {
       providers.folding = provider;
+      return disposable;
+    },
+    registerCodeActionsProvider: (_selector, provider) => {
+      providers.codeActions = provider;
       return disposable;
     },
     registerDocumentHighlightProvider: (_selector, provider) => {
@@ -889,6 +918,55 @@ async function run() {
     [labelDeclaration, labelUse]
   );
   assert(parameterEdits.get(mainUri).every((edit) => edit.newText === 'caption'));
+
+  // Extract the selection to a macro
+  const extractText = '<#macro card title>\n  <#list items as item>\n    <p>${item.name} ${title} ${other}</p>\n  </#list>\n</#macro>\n';
+  const extractDocument = new Document(mainUri, extractText);
+  const extractRange = new Range(
+    extractDocument.positionAt(extractText.indexOf('    <p>')),
+    extractDocument.positionAt(extractText.indexOf('</p>') + '</p>'.length)
+  );
+  const extractActions = providers.codeActions.provideCodeActions(extractDocument, extractRange);
+  assert.deepStrictEqual(extractActions.map((action) => [action.title, action.kind, action.command.command]), [
+    ['Extract to macro', 'refactor.extract', 'freemarker.extractMacro'],
+    ['Surround with <#list>', 'refactor.rewrite', 'freemarker.surroundWith'],
+    ['Surround with <#if>', 'refactor.rewrite', 'freemarker.surroundWith']
+  ]);
+  assert.deepStrictEqual(providers.codeActions.provideCodeActions(extractDocument, new Range(0, 0, 0, 0)), []);
+  inputName = 'itemRow';
+  await registeredCommands['freemarker.extractMacro'](extractDocument, extractRange);
+  const extractEdits = appliedEdits[appliedEdits.length - 1].get(mainUri);
+  assert.strictEqual(extractEdits[0].newText, '    <@itemRow item=item title=title />');
+  assert.strictEqual(
+    extractEdits[1].newText,
+    '\n\n<#macro itemRow item title>\n    <p>${item.name} ${title} ${other}</p>\n</#macro>'
+  );
+  assert.strictEqual(extractDocument.offsetAt(extractEdits[1].range.start), extractText.indexOf('</#macro>') + '</#macro>'.length);
+  const cutRange = new Range(
+    extractDocument.positionAt(extractText.indexOf('<#list')),
+    extractDocument.positionAt(extractText.indexOf('</p>') + '</p>'.length)
+  );
+  await registeredCommands['freemarker.extractMacro'](extractDocument, cutRange);
+  assert.strictEqual(shownWarnings.length, 1);
+
+  // Surround the selection with <#list> or <#if>
+  const snippets = [];
+  vscode.window.activeTextEditor = { document: extractDocument, options: {}, insertSnippet: async (snippet, range) => snippets.push([snippet.value, range]) };
+  await registeredCommands['freemarker.surroundWith'](extractDocument, extractRange, 'if');
+  assert.strictEqual(snippets[0][0], '    <#if ${1:condition}>\n        <p>\\${item.name\\} \\${title\\} \\${other\\}</p>\n    </#if>');
+  assert.strictEqual(extractDocument.offsetAt(snippets[0][1].start), extractText.indexOf('    <p>'));
+  // A selection in the middle of a line is widened to the whole line
+  await registeredCommands['freemarker.surroundWith'](extractDocument, new Range(
+    extractDocument.positionAt(extractText.indexOf('${item.name}')),
+    extractDocument.positionAt(extractText.indexOf('${title}') - 1)
+  ), 'list');
+  assert.strictEqual(
+    snippets[1][0],
+    '    <#list ${1:items} as ${2:item}>\n        <p>\\${item.name\\} \\${title\\} \\${other\\}</p>\n    </#list>'
+  );
+  await registeredCommands['freemarker.surroundWith'](extractDocument, cutRange, 'if');
+  assert.strictEqual(shownWarnings.length, 2);
+  vscode.window.activeTextEditor = undefined;
 
   // Template paths of import and include
   const pathCompletionsAt = async (text, targetUri = mainUri) => {

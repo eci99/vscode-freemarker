@@ -86,8 +86,20 @@
         "title": "Toggle Line Comment",
         "category": "FreeMarker",
         "enablement": "editorLangId == freemarker"
+      },
+      {
+        "command": "freemarker.extractMacro",
+        "title": "FreeMarker: Extract to Macro"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "freemarker.extractMacro",
+          "when": "editorLangId == freemarker && editorHasSelection"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "freemarker.toggleLineComment",
