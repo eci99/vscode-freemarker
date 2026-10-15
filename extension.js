@@ -819,7 +819,8 @@ class TemplateWorkspaceIndex {
           severity: 'warning'
         });
       }
-      for (const token of semanticTokens(source, { ...this.declaredElsewhere(record), reportUnknown: true })) {
+      const reportUndeclared = vscode.workspace.getConfiguration('freemarker').get('validateUndeclaredNames', true);
+      for (const token of reportUndeclared ? semanticTokens(source, { ...this.declaredElsewhere(record), reportUnknown: true }) : []) {
         if (token.type !== 'unknown') continue;
         issues.push({
           message: `"${source.slice(token.offset, token.offset + token.length)}" is not declared in this template or the ones it includes or imports.`,

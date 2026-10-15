@@ -1603,6 +1603,11 @@ async function run() {
     ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning],
     ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning]
   ]);
+  const undeclaredName = '"fromDataModel" is not declared in this template or the ones it includes or imports.';
+  assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), [[undeclaredName, vscode.DiagnosticSeverity.Warning]]);
+  settings.validateUndeclaredNames = false;
+  assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), []);
+  delete settings.validateUndeclaredNames;
   const missingTitleDocument = new Document(uri('/virtual/work/pages/checked.ftl'), '<#import "../lib/cards.ftl" as cards>\n<@cards.render />');
   onDidOpenDocument(missingTitleDocument);
   await new Promise((resolve) => setImmediate(resolve));
