@@ -2,6 +2,9 @@ const { findTagEnd, splitParameters } = require('./template-index');
 
 const KEYWORDS = new Set(['as', 'in', 'using', 'true', 'false', 'gt', 'gte', 'lt', 'lte']);
 
+// Directives whose parameters are expressions; the others take settings such as parse=false.
+const EXPRESSION_DIRECTIVES = new Set(['if', 'elseif', 'list', 'items', 'return', 'switch', 'case', 'assign', 'local', 'global']);
+
 function findInterpolationEnd(text, start) {
   let quote = null;
   let nesting = 0;
@@ -47,6 +50,12 @@ function identifiers(source, start, end) {
     let nameEnd = index + 1;
     while (nameEnd < end && /[A-Za-z0-9_]/.test(source[nameEnd])) nameEnd += 1;
     const name = source.slice(index, nameEnd);
+    // The r of a raw string literal, r"..."
+    if (name === 'r' && (source[nameEnd] === '"' || source[nameEnd] === "'")
+      && !/[A-Za-z0-9_.]$/.test(source.slice(start, index))) {
+      index = nameEnd - 1;
+      continue;
+    }
     const before = source.slice(start, index).trimEnd();
     const after = source.slice(nameEnd, end).trimStart();
     const member = before.endsWith('.') && !before.endsWith('..');
@@ -63,7 +72,8 @@ function identifiers(source, start, end) {
 // The names of a template that is already in the default syntax, for semantic highlighting:
 // { offset, length, type: 'parameter' | 'variable' | 'namespace' | 'macro' | 'function', local }.
 // `options.variables`, `options.functions`, and `options.namespaces` are the names that
-// are declared in other templates.
+// are declared in other templates. With `options.reportUnknown`, names that are declared
+// nowhere come back with the type 'unknown'.
 function semanticTokens(source, options = {}) {
   const regions = [];
   for (let index = 0; index < source.length;) {
@@ -153,6 +163,18 @@ function semanticTokens(source, options = {}) {
     const scope = scopes
       .filter((candidate) => region.start >= candidate.start && region.start < candidate.end)
       .sort((left, right) => right.start - left.start)[0];
+    const checked = options.reportUnknown
+      && (region.kind === undefined || region.kind === '@' || EXPRESSION_DIRECTIVES.has(region.name));
+    // <@macro ; a, b> declares loop variables after the semicolon.
+    const semicolon = region.kind === '@' ? source.slice(region.start, region.end).indexOf(';') : -1;
+    const isKnown = (name) => (scope && scope.parameters.has(name))
+      || (scope ? scope.locals.has(name) : topLevelLocals.has(name))
+      || assigned.has(name) || namespaces.has(name);
+    const unknown = (token, name) => {
+      if (!checked || /_(?:index|has_next|count)$/.test(name)) return;
+      if (semicolon >= 0 && token.offset > region.start + semicolon) return;
+      tokens.push({ ...token, type: 'unknown', local: false });
+    };
     for (const { name, offset, member, parent, call, assigned: isArgument } of identifiers(source, region.start, region.end)) {
       const token = { offset, length: name.length };
       if (member) {
@@ -162,6 +184,7 @@ function semanticTokens(source, options = {}) {
         }
       } else if (call) {
         if (functions.has(name)) tokens.push({ ...token, type: 'function', local: false });
+        else if (!isKnown(name)) unknown(token, name);
       } else if (region.kind === '@' && isArgument) {
         tokens.push({ ...token, type: 'parameter', local: false });
       } else if (scope && scope.parameters.has(name)) {
@@ -172,6 +195,8 @@ function semanticTokens(source, options = {}) {
         tokens.push({ ...token, type: 'variable', local: false });
       } else if (namespaces.has(name)) {
         tokens.push({ ...token, type: 'namespace', local: false });
+      } else if (!isArgument) {
+        unknown(token, name);
       }
     }
   }

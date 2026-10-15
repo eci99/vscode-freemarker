@@ -10,7 +10,7 @@ const PREFORMATTED_ELEMENTS = new Set(['pre', 'textarea']);
 // Scripts and style sheets keep the indentation they have relative to their first line.
 const RAW_TEXT_ELEMENTS = new Set(['script', 'style']);
 
-const { normalizeTemplate } = require('./syntax');
+const { isRawStringStart, normalizeTemplate } = require('./syntax');
 const { htmlTags } = require('./validator');
 
 function maskComments(text) {
@@ -21,12 +21,14 @@ function maskComments(text) {
 
 function findTagEnd(text, start) {
   let quote = null;
+  let raw = false;
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && text[index - 1] !== '\\') quote = null;
+      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
+      raw = isRawStringStart(text, index);
     } else if (character === '>') {
       return index;
     }
@@ -146,11 +148,36 @@ function indentationOf(line) {
   return line.length - line.trimStart().length;
 }
 
+// How many of ( [ { are still open at the end of the text, outside of strings.
+function openBrackets(text) {
+  let depth = 0;
+  let quote = null;
+  let raw = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      raw = isRawStringStart(text, index);
+    } else if (character === '(' || character === '[' || character === '{') {
+      depth += 1;
+    } else if (character === ')' || character === ']' || character === '}') {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+  return depth;
+}
+
 function formatTemplate(text, options = {}) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const sourceLines = text.split(/\r?\n/);
   const maskedText = maskComments(normalizeTemplate(text, options).text);
   const maskedLines = maskedText.split(/\r?\n/);
+  const lineOffsets = [0];
+  for (let index = maskedText.indexOf('\n'); index >= 0; index = maskedText.indexOf('\n', index + 1)) {
+    lineOffsets.push(index + 1);
+  }
   const html = templateStructure(maskedText);
   for (const region of html.regions) {
     const lines = sourceLines.slice(region.first, region.last + 1).filter((line) => line.trim());
@@ -161,6 +188,15 @@ function formatTemplate(text, options = {}) {
     : ' '.repeat(Math.max(1, options.tabSize || 4));
   let depth = 0;
   let formattingDisabled = false;
+  // The open tags with the indentation of their line and the depth before them.
+  const openTags = [];
+  const tagKey = (tag) => `${tag.directive ? '#' : '<'}${tag.name}`;
+  const openerOf = (tag) => {
+    for (let index = openTags.length - 1; index >= 0; index -= 1) {
+      if (openTags[index].key === tagKey(tag)) return index;
+    }
+    return -1;
+  };
 
   const formatted = sourceLines.map((line, lineIndex) => {
     const marker = formatterMarker(line);
@@ -182,22 +218,42 @@ function formatTemplate(text, options = {}) {
 
     if (continued) {
       // The rest of a tag is indented below its first line, and the end of the tag lines up with it.
-      lineDepth = continued.lineDepth + (/^\s*\/?>/.test(masked) ? 0 : 1);
+      // The entries of a hash or sequence are indented like JSON, by how deeply they are nested.
+      const nesting = openBrackets(maskedText.slice(continued.offset, lineOffsets[lineIndex]));
+      const closers = /^\s*[}\])]*/.exec(masked)[0].trim().length;
+      lineDepth = continued.lineDepth + (nesting > 0
+        ? Math.max(0, nesting - closers)
+        : /^\s*\/?>/.test(masked) ? 0 : 1);
     } else if (firstTag && (firstTag.closing || (firstTag.directive && BRANCH_DIRECTIVES.has(firstTag.name)))) {
-      lineDepth = Math.max(0, lineDepth - 1);
+      const opener = firstTag.closing ? openerOf(firstTag) : -1;
+      lineDepth = opener >= 0 ? openTags[opener].lineDepth : Math.max(0, lineDepth - 1);
     }
 
     for (const tag of tags) {
       tag.lineDepth = lineDepth;
       if (tag.directive) {
         if (tag.closing && BLOCK_DIRECTIVES.has(tag.name)) {
-          depth = Math.max(0, depth - 1);
+          const opener = openerOf(tag);
+          if (opener >= 0) {
+            depth = openTags[opener].depthBefore;
+            openTags.length = opener;
+          } else {
+            depth = Math.max(0, depth - 1);
+          }
         } else if (!tag.closing && BLOCK_DIRECTIVES.has(tag.name) && !BRANCH_DIRECTIVES.has(tag.name)) {
+          openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
           depth += 1;
         }
       } else if (tag.closing) {
-        depth = Math.max(0, depth - 1);
+        const opener = openerOf(tag);
+        if (opener >= 0) {
+          depth = openTags[opener].depthBefore;
+          openTags.length = opener;
+        } else {
+          depth = Math.max(0, depth - 1);
+        }
       } else if (!tag.selfClosing) {
+        openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
         depth += 1;
       }
     }

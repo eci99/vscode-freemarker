@@ -338,12 +338,54 @@ class TemplateWorkspaceIndex {
         if (imported && (includePrivate || !this.isPrivateName(directive.alias))) {
           declarations.push({
             symbol: { name: directive.alias, kind: 'namespace' },
-            record: imported
+            record: imported,
+            origin: source
           });
         }
       }
     }
     return declarations;
+  }
+
+  // What is visible where the cursor is: loop variables only inside their loop, and
+  // the parameters and local variables of a macro or function only inside it.
+  scopeDeclarations(record, offset, declarations) {
+    const enclosing = templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks.filter((block) =>
+      block.kind === 'directive' && offset > block.open.offset + block.open.length && offset <= block.close.offset);
+    const inOpenTag = (block, symbol) =>
+      symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length;
+    const loopPattern = /^[<[]#(?:list|items)\b/;
+    const seenAliases = new Set();
+    const scoped = declarations
+      .filter(({ symbol, record: source }) =>
+        // Keys of a hash are offered after its name and a dot.
+        !(symbol.kind === 'variable' && symbol.name.includes('.'))
+        && (!loopPattern.test(symbol.declaration || '')
+          || (source === record && enclosing.some((block) => inOpenTag(block, symbol)))))
+      .filter(({ symbol, origin }) => {
+        if (symbol.kind !== 'namespace') return true;
+        // An alias of an included template is private to it, and one name is shown once.
+        if (origin !== record && this.isPrivateName(symbol.name)) return false;
+        if (seenAliases.has(symbol.name)) return false;
+        seenAliases.add(symbol.name);
+        return true;
+      });
+
+    const callable = enclosing.filter((block) => block.name === 'macro' || block.name === 'function').pop();
+    if (!callable) return scoped;
+    const owner = record.symbols.find((symbol) =>
+      (symbol.kind === 'macro' || symbol.kind === 'function') && inOpenTag(callable, symbol));
+    const parameters = ((owner && owner.parameters) || []).map(({ name, defaultValue }) => ({
+      symbol: { name, kind: 'variable', value: defaultValue, declaration: `Parameter of ${owner.name}` },
+      record,
+      origin: record
+    }));
+    const locals = record.symbols
+      .filter((symbol) => symbol.topLevel === false && symbol.kind === 'variable'
+        && symbol.offset > callable.open.offset && symbol.offset < offset
+        && !loopPattern.test(symbol.declaration || ''))
+      .map((symbol) => ({ symbol, record }));
+    return [...scoped, ...parameters, ...locals];
   }
 
   macroArgumentCompletions(record, source, cursorOffset) {
@@ -405,7 +447,27 @@ class TemplateWorkspaceIndex {
       });
   }
 
-  namedArguments(text) {
+  // The cursor is after the = of a named argument, as in <@macro name=|.
+  isMacroArgumentValue(source, offset) {
+    const before = source.slice(0, offset);
+    const tagStart = before.lastIndexOf('<@');
+    if (tagStart < 0) return false;
+    const body = before.slice(tagStart + 2);
+    if (!/^[A-Za-z_][A-Za-z0-9_.]*\s/.test(body)) return false;
+    let quote = null;
+    for (const character of body) {
+      if (quote) {
+        if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '>') {
+        return false;
+      }
+    }
+    return !quote && /\s[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:[A-Za-z_][A-Za-z0-9_.]*)?$/.test(body);
+  }
+
+  namedArguments(text, entries = []) {
     const names = new Set();
     let quote = null;
     let nesting = 0;
@@ -433,7 +495,10 @@ class TemplateWorkspaceIndex {
       while (/[A-Za-z0-9_]/.test(text[index] || '')) index += 1;
       const name = text.slice(nameStart, index);
       while (/\s/.test(text[index] || '')) index += 1;
-      if (text[index] === '=') names.add(name);
+      if (text[index] === '=') {
+        names.add(name);
+        entries.push({ name, offset: nameStart });
+      }
       index -= 1;
     }
     return names;
@@ -501,7 +566,19 @@ class TemplateWorkspaceIndex {
       const tagEnd = findTagEnd(source, invocations.lastIndex);
       if (tagEnd < 0) continue;
       const argumentText = source.slice(invocations.lastIndex, tagEnd).replace(/\/\s*$/, '');
-      const supplied = this.namedArguments(argumentText);
+      const entries = [];
+      const supplied = this.namedArguments(argumentText, entries);
+      // A macro with a catch-all parameter (others...) takes any argument.
+      if (!/\w\s*\.\.\./.test(declaration.symbol.declaration || '')) {
+        for (const { name, offset } of entries) {
+          if ((declaration.symbol.parameters || []).some((parameter) => parameter.name === name)) continue;
+          issues.push({
+            message: `Macro "${declaration.symbol.name}" has no parameter "${name}".`,
+            offset: invocations.lastIndex + offset,
+            length: name.length
+          });
+        }
+      }
       // Positional arguments cannot be matched to parameter names reliably.
       if (supplied.size === 0 && argumentText.split(';')[0].trim()) continue;
       const missing = (declaration.symbol.parameters || [])
@@ -512,6 +589,37 @@ class TemplateWorkspaceIndex {
           message: `Missing required parameter${missing.length > 1 ? 's' : ''} ${missing.join(', ')} for macro "${declaration.symbol.name}".`,
           offset: nameOffset,
           length: match[1].length,
+          severity: 'warning'
+        });
+      }
+    }
+
+    // The data model is not known, so a name that is declared nowhere is only a warning.
+    // Names from a template that was not found could be among the missing ones.
+    if (!this.hasUnresolvedIncludes(record)) {
+      const qualified = /(?<![A-Za-z0-9_.?])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)/g;
+      while ((match = qualified.exec(source)) !== null) {
+        if (!this.isFreeMarkerExpression(source, match.index, match.index)) continue;
+        const segments = match[1].split('.');
+        const memberName = segments[segments.length - 1];
+        if (visible.some(({ symbol }) => symbol.kind === 'variable' && symbol.name === segments[0])) continue;
+        const namespace = this.resolveNamespaceRecord(record, segments.slice(0, -1), true);
+        if (!namespace || this.hasUnresolvedIncludes(namespace)) continue;
+        if (this.includedSymbols(namespace).some(({ symbol }) => symbol.name === memberName)
+          || this.importedRecord(namespace, memberName)) continue;
+        issues.push({
+          message: `"${memberName}" is not defined in namespace "${segments.slice(0, -1).join('.')}" (${path.basename(namespace.uri.fsPath)}).`,
+          offset: match.index + match[1].length - memberName.length,
+          length: memberName.length,
+          severity: 'warning'
+        });
+      }
+      for (const token of semanticTokens(source, { ...this.declaredElsewhere(record), reportUnknown: true })) {
+        if (token.type !== 'unknown') continue;
+        issues.push({
+          message: `"${source.slice(token.offset, token.offset + token.length)}" is not declared in this template or the ones it includes or imports.`,
+          offset: token.offset,
+          length: token.length,
           severity: 'warning'
         });
       }
@@ -1262,15 +1370,19 @@ class TemplateWorkspaceIndex {
   }
 
   // Colors names by what they are, which the grammar cannot tell.
-  async semanticTokens(document) {
-    await this.ready;
-    const record = this.currentRecord(document);
+  declaredElsewhere(record) {
     const included = this.namespaceDeclarations(record, true).filter(({ symbol, record: source }) =>
       (source !== record || symbol.kind === 'namespace')
       && !/^[<[]#(?:list|items)\b/.test(symbol.declaration || ''));
     const names = (kind) => included.filter(({ symbol }) => symbol.kind === kind).map(({ symbol }) => symbol.name);
+    return { variables: names('variable'), functions: names('function'), namespaces: names('namespace') };
+  }
+
+  async semanticTokens(document) {
+    await this.ready;
+    const record = this.currentRecord(document);
     const builder = new vscode.SemanticTokensBuilder(semanticTokensLegend);
-    const declaredElsewhere = { variables: names('variable'), functions: names('function'), namespaces: names('namespace') };
+    const declaredElsewhere = this.declaredElsewhere(record);
     for (const token of semanticTokens(record.source, declaredElsewhere)) {
       builder.push(
         new vscode.Range(document.positionAt(token.offset), document.positionAt(token.offset + token.length)),
@@ -1458,23 +1570,35 @@ class TemplateWorkspaceIndex {
     if (specialVariableStart >= 0 && this.isFreeMarkerExpression(record.source, specialVariableStart, offset)) {
       return this.specialVariableCompletions(record);
     }
-    const macroArguments = this.macroArgumentCompletions(record, record.source, offset);
+    const macroValue = this.isMacroArgumentValue(record.source, offset);
+    const macroArguments = macroValue ? undefined : this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
     const functionArguments = this.functionArgumentCompletions(record, beforeCursor);
     if (functionArguments !== undefined) return functionArguments;
-    const interpolationContext = this.isInterpolationContext(record.source, offset);
+    const interpolationContext = macroValue || this.isInterpolationContext(record.source, offset);
     const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 
     if (namespaceMatch) {
-      const imported = this.resolveNamespaceRecord(record, namespaceMatch[1].split('.'));
-      declarations = imported
-        ? this.namespaceDeclarations(imported)
-        : this.nestedVariableDeclarations(record, namespaceMatch[1]);
+      const segments = namespaceMatch[1].split('.');
+      const imported = this.resolveNamespaceRecord(record, segments);
+      if (imported) {
+        // A hash is offered once; its keys come after its name and a dot.
+        declarations = this.namespaceDeclarations(imported)
+          .filter(({ symbol }) => !(symbol.kind === 'variable' && symbol.name.includes('.')));
+      } else {
+        // alias.hash. offers the keys of a hash of the imported template.
+        let owner;
+        let split = segments.length - 1;
+        for (; split > 0 && !owner; split -= 1) owner = this.resolveNamespaceRecord(record, segments.slice(0, split));
+        declarations = owner
+          ? this.nestedVariableDeclarations(owner, segments.slice(split + 1).join('.'))
+          : this.nestedVariableDeclarations(record, namespaceMatch[1]);
+      }
     } else if (/<@([A-Za-z_][A-Za-z0-9_]*)?$/.test(beforeCursor)) {
-      declarations = this.namespaceDeclarations(record, true);
+      declarations = this.scopeDeclarations(record, offset, this.namespaceDeclarations(record, true));
     } else if (interpolationContext) {
-      declarations = this.namespaceDeclarations(record, true);
+      declarations = this.scopeDeclarations(record, offset, this.namespaceDeclarations(record, true));
     }
 
     const wordPrefix = /[A-Za-z_][A-Za-z0-9_]*$/.exec(beforeCursor);
@@ -1503,12 +1627,16 @@ class TemplateWorkspaceIndex {
     }
 
     const groupOrder = { namespace: 0, variable: 1, function: 2, macro: 3 };
+    const isLocal = ({ record: sourceRecord, origin }) => (origin || sourceRecord) === record;
     declarations.sort((left, right) => {
       const groupDifference = (groupOrder[left.symbol.kind] ?? 4) - (groupOrder[right.symbol.kind] ?? 4);
-      return groupDifference || left.symbol.name.localeCompare(right.symbol.name);
+      return groupDifference
+        || Number(isLocal(right)) - Number(isLocal(left))
+        || left.symbol.name.localeCompare(right.symbol.name);
     });
 
-    const symbolItems = declarations.map(({ symbol, record: sourceRecord }) => {
+    const symbolItems = declarations.map((declaration) => {
+      const { symbol, record: sourceRecord } = declaration;
       const kind = symbol.kind === 'namespace'
         ? vscode.CompletionItemKind.Module
         : symbol.kind === 'variable'
@@ -1531,7 +1659,7 @@ class TemplateWorkspaceIndex {
           ? `${symbol.name} = ${shortVariableValue}`
           : symbol.name;
       const item = new vscode.CompletionItem(signature, kind);
-      item.sortText = `${String(groupOrder[symbol.kind] ?? 4).padStart(2, '0')}_${symbol.name.toLowerCase()}`;
+      item.sortText = `${String(groupOrder[symbol.kind] ?? 4).padStart(2, '0')}_${isLocal(declaration) ? 0 : 1}_${symbol.name.toLowerCase()}`;
       const sourceName = path.basename(sourceRecord.uri.fsPath);
       item.detail = symbol.kind === 'function' || symbol.kind === 'macro'
         ? sourceName

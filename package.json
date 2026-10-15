@@ -117,7 +117,8 @@
     ],
     "configurationDefaults": {
       "[freemarker]": {
-        "editor.semanticHighlighting.enabled": true
+        "editor.semanticHighlighting.enabled": true,
+        "editor.autoClosingPairs": "always"
       }
     },
     "languages": [

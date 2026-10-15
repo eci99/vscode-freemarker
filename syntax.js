@@ -13,6 +13,17 @@ function isTagStart(text, index) {
   return next === '#' || next === '@';
 }
 
+// In a raw string literal (r"..."), a backslash is a plain character.
+function isRawStringStart(text, index) {
+  return text[index - 1] === 'r' && !/[A-Za-z0-9_.]/.test(text[index - 2] || '');
+}
+
+// Replaces the backslashes in raw strings, so that scanners that treat a backslash
+// as an escape do not skip the closing quote. The offsets stay the same.
+function maskRawStrings(text) {
+  return text.replace(/(?<![A-Za-z0-9_.])r(["'])((?:(?!\1)[^])*)\1/g, (match) => match.replace(/\\/g, '/'));
+}
+
 // 'square' or 'angle'. An <#ftl> or [#ftl] header wins over the setting, and with 'auto'
 // the first FreeMarker tag of the template decides.
 function resolveTagSyntax(text, tagSyntax = 'auto') {
@@ -28,12 +39,14 @@ function resolveTagSyntax(text, tagSyntax = 'auto') {
 function squareBracketEnd(text, start) {
   let depth = 0;
   let quote = null;
+  let raw = false;
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && text[index - 1] !== '\\') quote = null;
+      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
+      raw = isRawStringStart(text, index);
     } else if (character === '[') {
       if (isTagStart(text, index)) return -1;
       depth += 1;
@@ -115,4 +128,4 @@ function toSquareBracketTags(text) {
     .replace(/<(\/?[#@][^<>]*)>/g, '[$1]');
 }
 
-module.exports = { displayText, normalizeTemplate, resolveTagSyntax, toSquareBracketTags };
+module.exports = { displayText, isRawStringStart, maskRawStrings, normalizeTemplate, resolveTagSyntax, toSquareBracketTags };

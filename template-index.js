@@ -1,4 +1,4 @@
-const { normalizeTemplate } = require('./syntax');
+const { maskRawStrings, normalizeTemplate } = require('./syntax');
 
 // Blanks the comments of `text`. `original` is the same template before it was rewritten
 // to the default syntax, and gets the same ranges blanked.
@@ -218,7 +218,7 @@ function symbolType(symbol) {
 
 function parseTemplate(text, options) {
   const normalized = normalizeTemplate(text, options);
-  const source = withoutComments(normalized.text);
+  const source = maskRawStrings(withoutComments(normalized.text));
   // The template as it was written, for everything that is shown to the user.
   const display = withoutComments(normalized.text, text);
   text = normalized.text;

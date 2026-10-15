@@ -1,7 +1,17 @@
 const { findBuiltin, suggestBuiltin } = require('./builtins');
 
 const { BRANCH_PARENTS, findDirective } = require('./directives');
-const { normalizeTemplate } = require('./syntax');
+const { normalizeTemplate, maskRawStrings } = require('./syntax');
+
+// Directives that take no parameters, and those that cannot do without them.
+const NO_PARAMETERS = new Set([
+  'else', 'attempt', 'recover', 'break', 'continue', 'default', 'flush', 'lt', 'rt', 'nt', 't',
+  'noparse', 'noautoesc', 'autoesc', 'compress', 'fallback', 'sep'
+]);
+const REQUIRED_PARAMETERS = new Set([
+  'if', 'elseif', 'switch', 'case', 'on', 'list', 'items', 'import', 'include', 'assign', 'local', 'global',
+  'setting', 'macro', 'function', 'escape', 'foreach', 'transform', 'outputformat'
+]);
 
 function withoutComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '));
@@ -76,6 +86,80 @@ function validateBuiltins(source, blocks) {
   return diagnostics;
 }
 
+// Hash literals ({"key": value, ...}) and the brackets around them in the expressions of tags
+// and interpolations.
+function validateHashes(source, blocks) {
+  const diagnostics = [];
+  const unparsed = blocks.filter((block) => block.name === 'noparse');
+  const expressionPattern = /[$#]\{|<[#@][A-Za-z_]/g;
+  const closers = { '{': '}', '[': ']', '(': ')' };
+  let match;
+
+  while ((match = expressionPattern.exec(source)) !== null) {
+    const start = match.index + 2;
+    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
+    const end = match[0][0] === '<' ? findTagEnd(source, start) : findInterpolationEnd(source, start);
+    if (end < 0) continue;
+    expressionPattern.lastIndex = end + 1;
+
+    const report = (message, offset, length = 1) => diagnostics.push({ message, offset, length });
+    // The entry of a hash that ends at `entryEnd`.
+    const checkEntry = (frame, entryEnd, isLast) => {
+      const text = source.slice(frame.entryStart, entryEnd);
+      const offset = frame.entryStart + (text.length - text.trimStart().length);
+      if (!text.trim()) {
+        if (!(isLast && frame.entries === 0)) report('Empty entry in hash.', Math.max(frame.entryStart - 1, frame.offset));
+      } else if (frame.colons === 0) {
+        report('Hash entry is missing ":" between key and value.', offset, text.trim().length);
+      } else if (frame.colons > 1) {
+        report('Hash entries must be separated by ",".', offset, text.trim().length);
+      } else if (!text.slice(0, text.indexOf(':')).trim()) {
+        report('Hash entry is missing its key.', offset);
+      } else if (!text.slice(text.indexOf(':') + 1).trim()) {
+        report('Hash entry is missing its value.', offset, text.trim().length);
+      }
+      frame.entries += 1;
+      frame.colons = 0;
+      frame.entryStart = entryEnd + 1;
+    };
+
+    const stack = [];
+    let quote = null;
+    let failed = false;
+    for (let index = start; index < end && !failed; index += 1) {
+      const character = source[index];
+      const frame = stack[stack.length - 1];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (closers[character]) {
+        stack.push({ character, offset: index, entryStart: index + 1, colons: 0, entries: 0 });
+      } else if (character === ',' && frame && frame.character === '{') {
+        checkEntry(frame, index, false);
+      } else if (character === ':' && frame && frame.character === '{') {
+        frame.colons += 1;
+      } else if (character === '}' || character === ']' || character === ')') {
+        if (!frame) {
+          report(`Unexpected "${character}".`, index);
+          failed = true;
+        } else if (closers[frame.character] !== character) {
+          report(`"${frame.character}" is closed by "${character}".`, index);
+          failed = true;
+        } else {
+          if (frame.character === '{') checkEntry(frame, index, true);
+          stack.pop();
+        }
+      }
+    }
+    if (!failed && stack.length > 0) {
+      const unclosed = stack[stack.length - 1];
+      report(`Unclosed "${unclosed.character}".`, unclosed.offset);
+    }
+  }
+  return diagnostics;
+}
+
 function tagLabel(tag, closing = false) {
   const label = `${closing ? '/' : ''}${tag.kind === 'directive' ? '#' : '@'}${tag.name}`;
   return tag.square ? `[${label}]` : `<${label}>`;
@@ -87,7 +171,7 @@ function tagLabel(tag, closing = false) {
 function templateBlocks(text, options) {
   const normalized = normalizeTemplate(text, options);
   const square = normalized.tagSyntax === 'square';
-  const source = withoutComments(normalized.text);
+  const source = maskRawStrings(withoutComments(normalized.text));
   const stack = [];
   const blocks = [];
   const diagnostics = [];
@@ -121,6 +205,26 @@ function templateBlocks(text, options) {
       nameLength: match[0].length,
       square
     };
+
+    if (isDirective && !directive) {
+      diagnostics.push({ message: `Unknown directive ${tagLabel(tag, closing)}.`, offset: tag.offset, length: tag.nameLength });
+      tagPattern.lastIndex = end + 1;
+      continue;
+    }
+    if (isDirective && !closing) {
+      const parameters = body.replace(/\/\s*$/, '').trim();
+      let problem;
+      if (NO_PARAMETERS.has(name) && parameters) problem = 'takes no parameters';
+      else if (REQUIRED_PARAMETERS.has(name) && !parameters) problem = 'is missing its parameters';
+      else if ((name === 'import' || name === 'items') && parameters && !/\bas\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:,\s*[A-Za-z_][A-Za-z0-9_]*\s*)?$/.test(parameters)) {
+        problem = 'needs "as name"';
+      } else if ((name === 'macro' || name === 'function') && parameters && !/^[A-Za-z_][A-Za-z0-9_.-]*(?:\s|$)/.test(parameters)) {
+        problem = 'needs a name';
+      }
+      if (problem) {
+        diagnostics.push({ message: `${tagLabel(tag)} ${problem}.`, offset: tag.offset, length: tag.length });
+      }
+    }
 
     if (closing) {
       closeOptionalBlocks(name);
@@ -300,7 +404,7 @@ function htmlTags(source) {
 function validateTemplate(text, options = {}) {
   const { source, blocks, diagnostics } = templateBlocks(text, options);
   const htmlDiagnostics = options.validateHtml === false ? [] : htmlTags(source).diagnostics;
-  return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks)];
+  return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks), ...validateHashes(source, blocks)];
 }
 
 module.exports = { htmlTags, templateBlocks, validateTemplate };

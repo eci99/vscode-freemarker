@@ -151,6 +151,16 @@
     "expression": {
       "patterns": [
         {
+          "name": "string.quoted.double.raw.freemarker",
+          "begin": "(?<![A-Za-z0-9_.])r\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.single.raw.freemarker",
+          "begin": "(?<![A-Za-z0-9_.])r'",
+          "end": "'"
+        },
+        {
           "name": "string.quoted.double.freemarker",
           "begin": "\"",
           "end": "\"",
