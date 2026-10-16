@@ -1,4 +1,4 @@
-# FreeMarker ![FreeMarker](images/icon-small.png) IntelliSense
+# FreeMarker (with IntelliSense)
 
 Completion, navigation, validation, and formatting for [Apache FreeMarker](https://freemarker.apache.org/) templates (`.ftl`, `.ftlh`, and `.ftlx`) in VS Code.
 
