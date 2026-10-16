@@ -1,8 +1,8 @@
 {
   "name": "freemarker-intellisense",
-  "displayName": "FreeMarker IntelliSense",
+  "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",

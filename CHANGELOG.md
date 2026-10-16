@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 - 2026-10-17
+
+Changed
+
+- Renamed to "FreeMarker (with IntelliSense)"
+
 ## 0.1.4 - 2026-10-17
 
 Changed
