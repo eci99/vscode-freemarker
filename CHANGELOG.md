@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 - 2026-10-17
+
+Changed
+
+- README: demo GIF of diagnostics, completion, signature help, hover, Go to Definition, and formatting, and an author's note
+
 ## 0.1.3 - 2026-10-16
 
 Added

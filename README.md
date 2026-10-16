@@ -6,6 +6,12 @@ The extension indexes the templates in your workspace and follows `<#import>` an
 
 Both tag syntaxes are supported, `<#if x>...</#if>` and `[#if x]...[/#if]`, as well as both interpolation syntaxes, `${x}` and `[=x]`.
 
+> **Author's note:** When editing FreeMarker templates, I wanted at least the support I was used
+> to from IntelliJ; syntax highlighting alone was not enough for me. If you work on more than
+> the occasional small template, I really recommend giving this extension a try.
+
+![Diagnostics, completion, signature help, hover, Go to Definition, and formatting in a FreeMarker template](images/demo.gif)
+
 ## Features
 
 ### Completion

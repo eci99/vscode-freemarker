@@ -6,3 +6,4 @@ test/**
 **/*.vsix
 images/*.svg
 images/icon-small.png
+images/demo.gif
