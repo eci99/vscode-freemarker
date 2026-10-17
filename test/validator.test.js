@@ -172,4 +172,7 @@ assert.deepStrictEqual(validateTemplate('<@m title="a ${x?upper_case}" /> ${r"${
 assert.deepStrictEqual(validateTemplate("<#function f array index default><#return (array?size>index)?then(array[index],default)/></#function>"), []);
 assert.deepStrictEqual(validateTemplate("<#if (a>b)>x</#if>"), []);
 
+// An escaped backslash before the closing quote does not escape the quote
+assert.deepStrictEqual(validateTemplate('<#macro m config="{\\\\"+name+"}" flag=true>x</#macro>'), []);
+
 console.log('Template validator tests passed.');

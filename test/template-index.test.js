@@ -138,4 +138,10 @@ const squareInterpolation = parseTemplate('<#assign a = 1>[=a]', { interpolation
 assert.strictEqual(squareInterpolation.source, '<#assign a = 1>${a}');
 assert.strictEqual(squareInterpolation.display, '<#assign a = 1>[=a]');
 
+const escapedBackslash = parseTemplate('<#macro m config="{\\\\"+name+"}" flag=true></#macro>');
+assert.deepStrictEqual(escapedBackslash.symbols[0].parameters, [
+  { name: 'config', defaultValue: '"{\\\\"+name+"}"' },
+  { name: 'flag', defaultValue: 'true' }
+]);
+
 console.log('Template parser tests passed.');

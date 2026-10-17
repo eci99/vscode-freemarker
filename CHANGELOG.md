@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 - 2026-10-18
+
+Fixed
+
+- Strings ending in an escaped backslash (e.g. `"{\\"`) no longer swallow the closing quote, which broke parsing of the rest of the tag
+- Completion after `alias.` inside the arguments of a function call (e.g. `inhalt=_fn.zahlMitEinheit(0.25,_K.`) offers the members of the alias instead of the top-level names again
+- Completion in a macro parameter value also works after a string ending in an escaped backslash (e.g. `<@m a="\\" b=alias.`)
+
 ## 0.1.5 - 2026-10-17
 
 Changed

@@ -843,6 +843,28 @@ async function run() {
     'Arguments for funcTest\n\n- `wert` = `pageTitle`\n- **`fallback` = `"standard"`**'
   );
 
+  const namespaceArgumentDocument = new Document(mainUri, `${mainText}\n\${toolkit.nested.funcTest(1, cards.`);
+  const namespaceArgumentCompletions = await providers.completion.provideCompletionItems(
+    namespaceArgumentDocument,
+    namespaceArgumentDocument.positionAt(namespaceArgumentDocument.getText().length)
+  );
+  assert(namespaceArgumentCompletions.some((item) => item.insertText === 'theme'));
+  assert(!namespaceArgumentCompletions.some((item) => item.insertText === 'pageTitle'));
+  const macroValueArgumentDocument = new Document(mainUri, `${mainText}\n<@layout x=toolkit.nested.funcTest(1,cards.`);
+  const macroValueArgumentCompletions = await providers.completion.provideCompletionItems(
+    macroValueArgumentDocument,
+    macroValueArgumentDocument.positionAt(macroValueArgumentDocument.getText().length)
+  );
+  assert(macroValueArgumentCompletions.some((item) => item.insertText === 'theme'));
+  assert(!macroValueArgumentCompletions.some((item) => item.insertText === 'pageTitle'));
+
+  const escapedValueDocument = new Document(mainUri, `${mainText}\n<@layout a="\\\\" x=cards.`);
+  const escapedValueCompletions = await providers.completion.provideCompletionItems(
+    escapedValueDocument,
+    escapedValueDocument.positionAt(escapedValueDocument.getText().length)
+  );
+  assert(escapedValueCompletions.some((item) => item.insertText === 'theme'));
+
   const literalFunctionArgumentDocument = new Document(
     mainUri,
     `${mainText}\n\${toolkit.nested.funcTest("wert", `

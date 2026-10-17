@@ -43,7 +43,8 @@ function squareBracketEnd(text, start) {
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
       raw = isRawStringStart(text, index);
@@ -136,7 +137,8 @@ function interpolationEnd(text, start) {
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
       raw = isRawStringStart(text, index);
@@ -159,7 +161,9 @@ function stringInterpolations(text, start, end) {
   for (let index = start; index < end; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && (raw || text[index - 1] !== '\\')) {
+      if (character === '\\' && !raw) {
+        index += 1;
+      } else if (character === quote) {
         quote = null;
       } else if (!raw && (character === '$' || character === '#') && text[index + 1] === '{') {
         const close = interpolationEnd(text, index + 2);

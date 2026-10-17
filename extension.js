@@ -56,7 +56,9 @@ function isInStringLiteral(source, offset) {
         index += 1;
       }
     } else if (top.quote) {
-      if (character === top.quote && (top.raw || source[index - 1] !== '\\')) {
+      if (character === '\\' && !top.raw) {
+        index += 1;
+      } else if (character === top.quote) {
         top.quote = null;
       } else if (!top.raw && (character === '$' || character === '#') && source[index + 1] === '{') {
         stack.push({ kind: 'interpolation', quote: null, raw: false, parentheses: 0, braces: 0 });
@@ -107,7 +109,8 @@ function closingTextAfterTypedTag(document, change, record) {
   for (let index = 0; index < header.length; index += 1) {
     const character = header[index];
     if (quote) {
-      if (character === quote && header[index - 1] !== '\\') quote = null;
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
     } else if (opener === '<' && character === ending && !/^[#@]/.test(header)) {
@@ -602,7 +605,8 @@ class TemplateWorkspaceIndex {
     for (let index = tagStart + 2; index < source.length; index += 1) {
       const character = source[index];
       if (quote) {
-        if (character === quote && source[index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
       } else if (character === '>') {
@@ -620,7 +624,8 @@ class TemplateWorkspaceIndex {
     for (let index = 0; index < invocation[2].length; index += 1) {
       const character = invocation[2][index];
       if (quote) {
-        if (character === quote && invocation[2][index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
       }
@@ -657,9 +662,11 @@ class TemplateWorkspaceIndex {
     const body = before.slice(tagStart + 2);
     if (!/^[A-Za-z_][A-Za-z0-9_.]*\s/.test(body)) return false;
     let quote = null;
-    for (const character of body) {
+    for (let index = 0; index < body.length; index += 1) {
+      const character = body[index];
       if (quote) {
-        if (character === quote) quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
       } else if (character === '>') {
@@ -679,7 +686,8 @@ class TemplateWorkspaceIndex {
     for (let index = 0; index < text.length; index += 1) {
       const character = text[index];
       if (quote) {
-        if (character === quote && text[index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
         continue;
       }
       if (character === '"' || character === "'") {
@@ -966,7 +974,9 @@ class TemplateWorkspaceIndex {
     for (let index = 0; index < source.length; index += 1) {
       const character = source[index];
       if (quote) {
-        if (character === quote && source[index - 1] !== '\\') {
+        if (character === '\\') {
+          index += 1;
+        } else if (character === quote) {
           quote = null;
         } else if ((character === '$' || character === '#') && source[index + 1] === '{') {
           interpolations.push({ quote, parentheses: parentheses.length, braces });
@@ -1027,7 +1037,8 @@ class TemplateWorkspaceIndex {
     for (let index = opening + 1; index < source.length; index += 1) {
       const character = source[index];
       if (quote) {
-        if (character === quote && source[index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
         continue;
       }
       if (character === '"' || character === "'") {
@@ -1169,7 +1180,8 @@ class TemplateWorkspaceIndex {
     for (let index = openingOffset + 2; index < beforeCursor.length; index += 1) {
       const character = beforeCursor[index];
       if (quote) {
-        if (character === quote && beforeCursor[index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
       } else if (character === '{') {
@@ -1203,7 +1215,8 @@ class TemplateWorkspaceIndex {
     for (let index = openingOffset + opening.length; index < tokenStart; index += 1) {
       const character = source[index];
       if (quote) {
-        if (character === quote && source[index - 1] !== '\\') quote = null;
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
       }
@@ -1307,7 +1320,8 @@ class TemplateWorkspaceIndex {
         for (let index = 0; index <= text.length; index += 1) {
           const character = text[index];
           if (quote) {
-            if (character === quote && text[index - 1] !== '\\') quote = null;
+            if (character === '\\') index += 1;
+            else if (character === quote) quote = null;
             continue;
           }
           if (character === '"' || character === "'") {
@@ -1949,10 +1963,11 @@ class TemplateWorkspaceIndex {
     const macroValue = this.isMacroArgumentValue(record.source, offset);
     const macroArguments = macroValue ? undefined : this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
-    const functionArguments = this.functionArgumentCompletions(record, beforeCursor);
+    const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
+    // An argument such as alias.| offers the members of alias, not the arguments.
+    const functionArguments = namespaceMatch ? undefined : this.functionArgumentCompletions(record, beforeCursor);
     if (functionArguments !== undefined) return functionArguments;
     const interpolationContext = macroValue || this.isInterpolationContext(record.source, offset);
-    const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
     let declarations = [];
 
     if (namespaceMatch) {

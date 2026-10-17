@@ -12,7 +12,8 @@ function findInterpolationEnd(text, start) {
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && text[index - 1] !== '\\') quote = null;
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
     } else if (character === '{') {
@@ -35,7 +36,8 @@ function identifiers(source, start, end) {
   for (let index = start; index < end; index += 1) {
     const character = source[index];
     if (quote) {
-      if (character === quote && source[index - 1] !== '\\') quote = null;
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
       continue;
     }
     if (character === '"' || character === "'") {

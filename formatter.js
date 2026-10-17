@@ -26,7 +26,8 @@ function findTagEnd(text, start) {
   for (let index = start; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
       raw = isRawStringStart(text, index);
@@ -90,7 +91,8 @@ function formatterMarker(line) {
     }
     const character = line[index];
     if (quote) {
-      if (character === quote && line[index - 1] !== '\\') quote = null;
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
       continue;
     }
     if (character === '"' || character === "'") {
@@ -161,7 +163,8 @@ function openBrackets(text) {
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
     if (quote) {
-      if (character === quote && (raw || text[index - 1] !== '\\')) quote = null;
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
     } else if (character === '"' || character === "'") {
       quote = character;
       raw = isRawStringStart(text, index);
