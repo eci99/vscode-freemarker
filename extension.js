@@ -169,6 +169,12 @@ function closingTagAfterTypedSlash(document, change, record) {
   return closingText;
 }
 
+// The line and character of an offset in text, for files that are not open.
+function textPosition(text, offset) {
+  const lines = text.slice(0, offset).split('\n');
+  return new vscode.Position(lines.length - 1, lines[lines.length - 1].length);
+}
+
 function syntaxOptions() {
   const configuration = vscode.workspace.getConfiguration('freemarker');
   return {
@@ -279,25 +285,96 @@ class TemplateWorkspaceIndex {
   }
 
   resolveTemplate(fromRecord, templatePath) {
+    const match = this.resolveTemplateBase(fromRecord, templatePath);
+    return match && match.record;
+  }
+
+  // The template a path leads to, together with the directory it was found from.
+  resolveTemplateBase(fromRecord, templatePath) {
     const cleanPath = templatePath.replace(/\\/g, '/');
     const isRooted = cleanPath.startsWith('/');
     const relativePath = cleanPath.replace(/^\/+/, '');
-    const candidates = [];
-    const addCandidate = (base, value) => {
-      const resolved = path.resolve(base, value);
-      candidates.push(resolved);
-      if (!path.extname(resolved)) {
-        candidates.push(`${resolved}.ftl`, `${resolved}.ftlh`, `${resolved}.ftlx`);
+    const bases = this.templateBases(fromRecord, isRooted);
+    const ownDirectory = !isRooted && fromRecord.uri.scheme === 'file';
+
+    for (const [order, base] of bases.entries()) {
+      const resolved = path.resolve(base, relativePath);
+      const candidates = path.extname(resolved)
+        ? [resolved]
+        : [resolved, `${resolved}.ftl`, `${resolved}.ftlh`, `${resolved}.ftlx`];
+      for (const candidate of candidates) {
+        const record = this.records.get(path.resolve(candidate));
+        if (record) return { record, base, isOwnDirectory: ownDirectory && order === 0 };
       }
-    };
-
-    for (const base of this.templateBases(fromRecord, isRooted)) addCandidate(base, relativePath);
-
-    for (const candidate of candidates) {
-      const record = this.records.get(path.resolve(candidate));
-      if (record) return record;
     }
     return undefined;
+  }
+
+  // The import and include paths that have to change so that they still lead to the same
+  // templates after the given files or folders are moved. Each edit names the file at its new location.
+  movedTemplateEdits(renames) {
+    const moved = new Map();
+    for (const { oldUri, newUri } of renames) {
+      if (oldUri.scheme !== 'file' || newUri.scheme !== 'file') continue;
+      const oldPath = path.resolve(oldUri.fsPath);
+      const newPath = path.resolve(newUri.fsPath);
+      for (const key of this.records.keys()) {
+        const relative = path.relative(oldPath, key);
+        // A moved folder takes all templates inside it along.
+        if (!relative) moved.set(key, newPath);
+        else if (!relative.startsWith('..') && !path.isAbsolute(relative)) moved.set(key, path.join(newPath, relative));
+      }
+    }
+    if (!moved.size) return [];
+    const newLocation = (key) => moved.get(key) || key;
+
+    const edits = [];
+    for (const [key, record] of this.records) {
+      if (record.uri.scheme !== 'file') continue;
+      for (const directive of record.directives) {
+        const match = this.resolveTemplateBase(record, directive.path);
+        if (!match) continue;
+        const targetKey = this.key(match.record.uri);
+        if (!moved.has(key) && !moved.has(targetKey)) continue;
+        const newPath = this.movedTemplatePath(record, directive.path, match, newLocation(key), newLocation(targetKey));
+        if (!newPath || newPath === directive.path) continue;
+        edits.push({
+          fsPath: newLocation(key),
+          start: textPosition(record.display, directive.pathOffset),
+          end: textPosition(record.display, directive.pathOffset + directive.pathLength),
+          newText: newPath
+        });
+      }
+    }
+    return edits;
+  }
+
+  // The path that leads from a template at recordPath to the one at targetPath, written like templatePath:
+  // relative to the template itself or to the same template root, with or without a leading slash and extension.
+  movedTemplatePath(record, templatePath, match, recordPath, targetPath) {
+    const cleanPath = templatePath.replace(/\\/g, '/');
+    const isRooted = cleanPath.startsWith('/');
+    const isInside = (base) => {
+      const relative = path.relative(base, targetPath);
+      return !relative.startsWith('..') && !path.isAbsolute(relative);
+    };
+
+    let base = match.isOwnDirectory ? path.dirname(recordPath) : match.base;
+    if (!match.isOwnDirectory && !isInside(base)) {
+      // The template has left the root it was found in.
+      base = isRooted
+        ? this.templateBases(record, true).find(isInside)
+        : path.dirname(recordPath);
+      if (!base) return undefined;
+    }
+
+    let result = path.relative(base, targetPath).split(path.sep).join('/');
+    if (!path.extname(cleanPath) && ['.ftl', '.ftlh', '.ftlx'].includes(path.extname(result))) {
+      result = result.slice(0, -path.extname(result).length);
+    }
+    if (isRooted) return `/${result}`;
+    if (cleanPath.startsWith('./') && !result.startsWith('../')) return `./${result}`;
+    return result;
   }
 
   includedSymbols(record, visited = new Set()) {
@@ -2115,6 +2192,10 @@ function activate(context) {
   const validateOpenDocuments = () => {
     for (const document of vscode.workspace.textDocuments) validateDocument(document);
   };
+  const updatePathsSetting = () => vscode.workspace.getConfiguration('freemarker').get('updatePathsOnFileMove', 'prompt');
+  // The edits for a move, from the moment before it to the moment after it.
+  const pendingMoveEdits = new Map();
+  const renameKey = (files) => files.map(({ oldUri, newUri }) => `${oldUri.fsPath}\n${newUri.fsPath}`).join('\n');
 
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider({ language: 'freemarker' }, {
@@ -2254,6 +2335,39 @@ function activate(context) {
       }
     }),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
+    // The paths are worked out before the move, while the index still knows the old locations,
+    // and changed after it, in the files at their new locations.
+    vscode.workspace.onWillRenameFiles((event) => {
+      if (updatePathsSetting() === 'never') return;
+      event.waitUntil(index.ready.then(() => {
+        pendingMoveEdits.set(renameKey(event.files), index.movedTemplateEdits(event.files));
+      }));
+    }),
+    vscode.workspace.onDidRenameFiles(async (event) => {
+      const key = renameKey(event.files);
+      const edits = pendingMoveEdits.get(key);
+      pendingMoveEdits.delete(key);
+      if (!edits || !edits.length) return;
+
+      if (updatePathsSetting() === 'prompt') {
+        const files = new Set(edits.map((edit) => edit.fsPath)).size;
+        const answer = await vscode.window.showInformationMessage(
+          `Update the import and include paths in ${files === 1 ? '1 template' : `${files} templates`}?`,
+          'Yes', 'No', 'Always', 'Never'
+        );
+        if (answer === 'Always' || answer === 'Never') {
+          await vscode.workspace.getConfiguration('freemarker')
+            .update('updatePathsOnFileMove', answer.toLowerCase(), vscode.ConfigurationTarget.Global);
+        }
+        if (answer !== 'Yes' && answer !== 'Always') return;
+      }
+
+      const workspaceEdit = new vscode.WorkspaceEdit();
+      for (const edit of edits) {
+        workspaceEdit.replace(vscode.Uri.file(edit.fsPath), new vscode.Range(edit.start, edit.end), edit.newText);
+      }
+      await vscode.workspace.applyEdit(workspaceEdit);
+    }),
     // The syntax settings change how every template is read.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('freemarker')) index.initialize().then(validateOpenDocuments);

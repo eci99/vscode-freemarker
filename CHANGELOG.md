@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7 - 2026-10-19
+
+Added
+
+- Moving or renaming a template or a folder updates the `<#import>` and `<#include>` paths that lead to and from the moved templates. The setting `freemarker.updatePathsOnFileMove` (`prompt`, `always`, `never`) decides whether to ask first
+
+Changed
+
+- Format Document: comments that fill whole lines start at the beginning of the line; the lines of a multi-line comment are left as they are
+- Format Document: the capture form of `<#assign>`, `<#local>`, and `<#global>` (`<#local x>...</#local>`) indents its content like a block
+
 ## 0.1.6 - 2026-10-18
 
 Fixed

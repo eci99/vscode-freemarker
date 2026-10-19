@@ -177,6 +177,11 @@ const shownWarnings = [];
 let inputName;
 let onDidOpenDocument;
 let onDidChangeDocument;
+let onWillRenameFiles;
+let onDidRenameFiles;
+let informationAnswer;
+const shownInformation = [];
+const updatedSettings = [];
 const disposable = { dispose() {} };
 const vscode = {
   Position,
@@ -187,6 +192,8 @@ const vscode = {
     }
   },
   Range,
+  Uri: { file: uri },
+  ConfigurationTarget: { Global: 1 },
   Location,
   Hover,
   DocumentSymbol,
@@ -321,7 +328,11 @@ const vscode = {
   window: {
     activeTextEditor: undefined,
     showInputBox: async () => inputName,
-    showWarningMessage: (message) => shownWarnings.push(message)
+    showWarningMessage: (message) => shownWarnings.push(message),
+    showInformationMessage: async (message, ...items) => {
+      shownInformation.push({ message, items });
+      return informationAnswer;
+    }
   },
   workspace: {
     workspaceFolders: [{ uri: uri('/virtual/work') }],
@@ -330,7 +341,10 @@ const vscode = {
     fs: {
       readFile: async (targetUri) => Buffer.from(files.get(targetUri.fsPath))
     },
-    getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
+    getConfiguration: () => ({
+      get: (key, fallback) => (key in settings ? settings[key] : fallback),
+      update: async (key, value, target) => updatedSettings.push({ key, value, target })
+    }),
     onDidChangeConfiguration: () => disposable,
     applyEdit: async (edit) => appliedEdits.push(edit),
     openTextDocument: async (targetUri) => new Document(targetUri, files.get(targetUri.fsPath)),
@@ -343,6 +357,14 @@ const vscode = {
       return disposable;
     },
     onDidCloseTextDocument: () => disposable,
+    onWillRenameFiles: (listener) => {
+      onWillRenameFiles = listener;
+      return disposable;
+    },
+    onDidRenameFiles: (listener) => {
+      onDidRenameFiles = listener;
+      return disposable;
+    },
     createFileSystemWatcher: () => ({
       onDidCreate() {},
       onDidChange() {},
@@ -1774,6 +1796,70 @@ async function run() {
   onDidOpenDocument(interpolationDocument);
   assert(diagnosticEntries.get(squareUri.fsPath)[0].message.includes('Did you mean ?upper_case?'));
   delete settings.interpolationSyntax;
+
+  // Moving templates and folders updates the import and include paths that lead to and from them.
+  for (const fsPath of ['/virtual/work/pages/main.ftl', '/virtual/work/lib/cards.ftl']) {
+    onDidOpenDocument(new Document(uri(fsPath), files.get(fsPath)));
+  }
+  const moveFiles = async (moves) => {
+    const event = { files: moves.map(([from, to]) => ({ oldUri: uri(from), newUri: uri(to) })) };
+    const waits = [];
+    onWillRenameFiles({ ...event, waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    const editCount = appliedEdits.length;
+    await onDidRenameFiles(event);
+    if (appliedEdits.length === editCount) return {};
+    const result = {};
+    for (const [target, edits] of appliedEdits[appliedEdits.length - 1].entries()) {
+      result[target.fsPath] = edits.map((edit) => [edit.range.start.line, edit.range.start.character, edit.newText]);
+    }
+    return result;
+  };
+
+  settings.updatePathsOnFileMove = 'always';
+  const movedFile = await moveFiles([['/virtual/work/lib/cards.ftl', '/virtual/work/lib/ui/cards.ftl']]);
+  assert.deepStrictEqual(movedFile['/virtual/work/pages/main.ftl'], [[0, 10, '../lib/ui/cards.ftl'], [2, 10, '../lib/ui/cards.ftl']]);
+  assert.deepStrictEqual(movedFile['/virtual/work/pages/caller.ftl'], [[0, 10, '../lib/ui/cards.ftl']]);
+  // The moved template itself, under its new name, including an import inside a macro.
+  assert.deepStrictEqual(movedFile['/virtual/work/lib/ui/cards.ftl'], [[0, 10, '../nested.ftl'], [4, 79, '../nested.ftl']]);
+  assert(!('/virtual/work/lib/cards.ftl' in movedFile));
+
+  // A renamed template in the same folder.
+  const renamedFile = await moveFiles([['/virtual/work/lib/nested.ftl', '/virtual/work/lib/inner.ftl']]);
+  assert.deepStrictEqual(renamedFile['/virtual/work/lib/toolkit.ftl'], [[0, 10, 'inner.ftl'], [1, 10, 'inner.ftl']]);
+
+  // A moved folder: paths between templates inside it stay as they are.
+  const movedFolder = await moveFiles([['/virtual/work/pages', '/virtual/work/views/pages']]);
+  assert.deepStrictEqual(movedFolder['/virtual/work/views/pages/main.ftl'], [
+    [0, 10, '../../lib/cards.ftl'], [1, 10, '../../lib/toolkit.ftl'], [2, 10, '../../lib/cards.ftl']
+  ]);
+  assert.deepStrictEqual(movedFolder['/virtual/work/views/pages/caller.ftl'], [[0, 10, '../../lib/cards.ftl']]);
+
+  // Paths from the workspace root keep their leading slash, and paths without an extension stay without one.
+  const rootedUri = uri('/virtual/work/pages/rooted.ftl');
+  onDidOpenDocument(new Document(rootedUri, '<#import "/lib/cards.ftl" as c>\n<#include "./shared">\n<#include "lib/config.ftl">'));
+  const rooted = await moveFiles([
+    ['/virtual/work/lib/cards.ftl', '/virtual/work/shared/cards.ftl'],
+    ['/virtual/work/pages/shared.ftl', '/virtual/work/pages/common/shared.ftl'],
+    ['/virtual/work/lib/config.ftl', '/virtual/work/lib/settings/config.ftl']
+  ]);
+  assert.deepStrictEqual(rooted[rootedUri.fsPath], [
+    [0, 10, '/shared/cards.ftl'], [1, 11, './common/shared'], [2, 11, 'lib/settings/config.ftl']
+  ]);
+
+  // Templates that nothing leads to need no edits, and the setting can turn the update off.
+  assert.deepStrictEqual(await moveFiles([['/virtual/work/lib/toolkit-shared.ftl', '/virtual/work/lib/toolkit-shared.ftl']]), {});
+  settings.updatePathsOnFileMove = 'never';
+  assert.deepStrictEqual(await moveFiles([['/virtual/work/lib/nested.ftl', '/virtual/work/nested.ftl']]), {});
+
+  settings.updatePathsOnFileMove = 'prompt';
+  informationAnswer = 'No';
+  assert.deepStrictEqual(await moveFiles([['/virtual/work/lib/nested.ftl', '/virtual/work/nested.ftl']]), {});
+  assert.strictEqual(shownInformation[shownInformation.length - 1].message, 'Update the import and include paths in 2 templates?');
+  informationAnswer = 'Always';
+  assert(Object.keys(await moveFiles([['/virtual/work/lib/nested.ftl', '/virtual/work/nested.ftl']])).length);
+  assert.deepStrictEqual(updatedSettings[updatedSettings.length - 1], { key: 'updatePathsOnFileMove', value: 'always', target: 1 });
+  delete settings.updatePathsOnFileMove;
 
   console.log('Extension integration tests passed.');
 }
