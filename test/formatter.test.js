@@ -175,4 +175,16 @@ assert.deepStrictEqual(
   ['[#macro card', '  title', '  size=1]', '  text', '[/#macro]']
 );
 
+// Comments that fill whole lines start at the beginning of the line
+assert.deepStrictEqual(
+  formatLines(['<#if a>', '<div>', '<#-- whole line -->', 'x <#-- trailing -->', '<#-- multi', '   line', '  comment -->', '</div>', '</#if>']),
+  ['<#if a>', '  <div>', '<#-- whole line -->', '    x <#-- trailing -->', '<#-- multi', '   line', '  comment -->', '  </div>', '</#if>']
+);
+
+// The capture form of assign, local, and global is a block
+assert.deepStrictEqual(
+  formatLines(['<#macro block>', '<#local inhalt>', '<#nested>', '</#local>', '<#assign x = 1>', '</#macro>']),
+  ['<#macro block>', '  <#local inhalt>', '    <#nested>', '  </#local>', '  <#assign x = 1>', '</#macro>']
+);
+
 console.log('Formatter tests passed.');

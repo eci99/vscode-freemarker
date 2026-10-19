@@ -4,6 +4,9 @@ const BLOCK_DIRECTIVES = new Set([
   'items', 'sep', 'recover', 'visit', 'recurse'
 ]);
 const BRANCH_DIRECTIVES = new Set(['else', 'elseif', 'case', 'default', 'recover']);
+// <#assign name>...</#assign> captures its content; with = it has no end tag.
+const CAPTURE_DIRECTIVES = new Set(['assign', 'local', 'global']);
+const CAPTURE_HEADER = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]*"|'[^']*')(?:\s+in\s[\s\S]+)?\s*$/;
 
 // The whitespace inside these elements is part of the page.
 const PREFORMATTED_ELEMENTS = new Set(['pre', 'textarea']);
@@ -61,6 +64,8 @@ function freemarkerTags(text) {
       directive,
       closing,
       selfClosing,
+      capture: directive && !closing && CAPTURE_DIRECTIVES.has(name.toLowerCase())
+        && CAPTURE_HEADER.test(text.slice(opening.lastIndex, end)),
       name: name.toLowerCase()
     });
     opening.lastIndex = end + 1;
@@ -180,11 +185,31 @@ function openBrackets(text) {
 function formatTemplate(text, options = {}) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const sourceLines = text.split(/\r?\n/);
-  const maskedText = maskComments(normalizeTemplate(text, options).text);
+  const normalizedText = normalizeTemplate(text, options).text;
+  const maskedText = maskComments(normalizedText);
   const maskedLines = maskedText.split(/\r?\n/);
   const lineOffsets = [0];
   for (let index = maskedText.indexOf('\n'); index >= 0; index = maskedText.indexOf('\n', index + 1)) {
     lineOffsets.push(index + 1);
+  }
+  // A comment that fills whole lines starts at the beginning of its first line; the lines of
+  // a longer one are left as they are.
+  const commentLines = new Map();
+  const lineOf = (offset) => {
+    let line = lineOffsets.length - 1;
+    while (lineOffsets[line] > offset) line -= 1;
+    return line;
+  };
+  const commentPattern = /<#--[\s\S]*?-->/g;
+  let comment;
+  while ((comment = commentPattern.exec(normalizedText)) !== null) {
+    const end = comment.index + comment[0].length;
+    const first = lineOf(comment.index);
+    const last = lineOf(end);
+    const lineEnd = last + 1 < lineOffsets.length ? lineOffsets[last + 1] : normalizedText.length;
+    if (normalizedText.slice(lineOffsets[first], comment.index).trim() || normalizedText.slice(end, lineEnd).trim()) continue;
+    commentLines.set(first, 'first');
+    for (let line = first + 1; line <= last; line += 1) commentLines.set(line, 'rest');
   }
   const html = templateStructure(maskedText);
   for (const region of html.regions) {
@@ -218,6 +243,8 @@ function formatTemplate(text, options = {}) {
     }
     if (marker === 'on') return line;
     if (!line.trim()) return '';
+    const commentLine = commentLines.get(lineIndex);
+    if (commentLine) return commentLine === 'first' ? line.trimStart() : line;
     const masked = maskedLines[lineIndex];
     const tags = html.tags.get(lineIndex) || [];
     const firstTag = tags.find((tag) => masked.slice(0, tag.start).trim() === '');
@@ -240,7 +267,7 @@ function formatTemplate(text, options = {}) {
     for (const tag of tags) {
       tag.lineDepth = lineDepth;
       if (tag.directive) {
-        if (tag.closing && BLOCK_DIRECTIVES.has(tag.name)) {
+        if (tag.closing && (BLOCK_DIRECTIVES.has(tag.name) || CAPTURE_DIRECTIVES.has(tag.name))) {
           const opener = openerOf(tag);
           if (opener >= 0) {
             depth = openTags[opener].depthBefore;
@@ -248,7 +275,7 @@ function formatTemplate(text, options = {}) {
           } else {
             depth = Math.max(0, depth - 1);
           }
-        } else if (!tag.closing && BLOCK_DIRECTIVES.has(tag.name) && !BRANCH_DIRECTIVES.has(tag.name)) {
+        } else if (!tag.closing && (tag.capture || (BLOCK_DIRECTIVES.has(tag.name) && !BRANCH_DIRECTIVES.has(tag.name)))) {
           openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
           depth += 1;
         }
