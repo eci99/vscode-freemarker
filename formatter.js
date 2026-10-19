@@ -138,6 +138,16 @@ function templateStructure(maskedText) {
     tags.get(position.line).push(tag);
     for (let line = position.line + 1; line <= locate(tag.end).line; line += 1) continuations.set(line, tag);
   }
+  // An interpolation that spans several lines, such as ${message(\n"key")}, is continued like a tag.
+  const interpolations = new Map();
+  for (const interpolation of multiLineInterpolations(maskedText)) {
+    const position = locate(interpolation.offset);
+    const last = locate(interpolation.end).line;
+    if (last === position.line || continuations.has(position.line + 1)) continue;
+    if (!interpolations.has(position.line)) interpolations.set(position.line, []);
+    interpolations.get(position.line).push(interpolation);
+    for (let line = position.line + 1; line <= last; line += 1) continuations.set(line, interpolation);
+  }
   for (const pair of htmlTags(maskedText).pairs) {
     const name = maskedText.slice(pair.open, pair.open + pair.openLength).toLowerCase();
     const open = locate(pair.open - 1);
@@ -153,7 +163,61 @@ function templateStructure(maskedText) {
     }
   }
   for (const lineTags of tags.values()) lineTags.sort((left, right) => left.start - right.start);
-  return { tags, continuations, regions: regions.filter((region) => region.last >= region.first) };
+  return { tags, continuations, interpolations, regions: regions.filter((region) => region.last >= region.first) };
+}
+
+// The interpolations of a template outside of FreeMarker tags, as { offset, end }: the
+// offset after ${ and the offset of the closing }.
+function multiLineInterpolations(text) {
+  const found = [];
+  const tags = freemarkerTags(text);
+  let tagIndex = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    while (tagIndex < tags.length && tags[tagIndex].end < index) tagIndex += 1;
+    const tag = tags[tagIndex];
+    if (tag && index >= tag.offset && index <= tag.end) {
+      index = tag.end;
+      continue;
+    }
+    if ((text[index] !== '$' && text[index] !== '#') || text[index + 1] !== '{') continue;
+    let quote = null;
+    let raw = false;
+    let nesting = 0;
+    for (let inner = index + 2; inner < text.length; inner += 1) {
+      const character = text[inner];
+      if (quote) {
+        if (character === '\\' && !raw) inner += 1;
+        else if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+        raw = isRawStringStart(text, inner);
+      } else if (character === '{') {
+        nesting += 1;
+      } else if (character === '}' && nesting-- === 0) {
+        found.push({ offset: index + 2, end: inner, interpolation: true });
+        index = inner;
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+// Whether the text ends inside a string literal, so that the next line is part of the string.
+function endsInString(text) {
+  let quote = null;
+  let raw = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      raw = isRawStringStart(text, index);
+    }
+  }
+  return quote !== null;
 }
 
 function indentationOf(line) {
@@ -251,6 +315,10 @@ function formatTemplate(text, options = {}) {
     const continued = html.continuations.get(lineIndex);
     let lineDepth = depth;
 
+    if (continued && endsInString(maskedText.slice(continued.offset, lineOffsets[lineIndex]))) {
+      // The line continues a string, whose spaces are part of its value.
+      return line;
+    }
     if (continued) {
       // The rest of a tag is indented below its first line, and the end of the tag lines up with it.
       // The entries of a hash or sequence are indented like JSON, by how deeply they are nested.
@@ -258,12 +326,19 @@ function formatTemplate(text, options = {}) {
       const closers = /^\s*[}\])]*/.exec(masked)[0].trim().length;
       lineDepth = continued.lineDepth + (nesting > 0
         ? Math.max(0, nesting - closers)
-        : /^\s*\/?>/.test(masked) ? 0 : 1);
+        : !continued.interpolation && /^\s*\/?>/.test(masked) ? 0 : 1);
     } else if (firstTag && (firstTag.closing || (firstTag.directive && BRANCH_DIRECTIVES.has(firstTag.name)))) {
       const opener = firstTag.closing ? openerOf(firstTag) : -1;
       lineDepth = opener >= 0 ? openTags[opener].lineDepth : Math.max(0, lineDepth - 1);
     }
 
+    for (const interpolation of html.interpolations.get(lineIndex) || []) interpolation.lineDepth = lineDepth;
+    // Several tags that are opened on one line, as in <p>Text <b>bold, indent what follows by one level.
+    const depthAtLineStart = depth;
+    const open = (tag) => {
+      openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
+      if (depth <= depthAtLineStart) depth += 1;
+    };
     for (const tag of tags) {
       tag.lineDepth = lineDepth;
       if (tag.directive) {
@@ -276,8 +351,7 @@ function formatTemplate(text, options = {}) {
             depth = Math.max(0, depth - 1);
           }
         } else if (!tag.closing && (tag.capture || (BLOCK_DIRECTIVES.has(tag.name) && !BRANCH_DIRECTIVES.has(tag.name)))) {
-          openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
-          depth += 1;
+          open(tag);
         }
       } else if (tag.closing) {
         const opener = openerOf(tag);
@@ -288,8 +362,7 @@ function formatTemplate(text, options = {}) {
           depth = Math.max(0, depth - 1);
         }
       } else if (!tag.selfClosing) {
-        openTags.push({ key: tagKey(tag), lineDepth, depthBefore: depth });
-        depth += 1;
+        open(tag);
       }
     }
 

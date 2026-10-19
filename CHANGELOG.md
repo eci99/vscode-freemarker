@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.8 - 2026-10-19
+
+Added
+
+- Rename Symbol and Find All References on the alias of an `<#import>` (`<#import "lib.ftl" as lib>`), at the import or at a use such as `<@lib.card />` or `${lib.title}`. Aliases of the same name declared by other imports are left alone
+- Errors for aliases that no `<#import>` declares, such as `<@cardz.render />` or `${toolkit.nestd.label}`. An included template sees the aliases of the templates that include it
+- Wrap with Abbreviation: wraps the selection in the tags of an Emmet-like abbreviation such as `ul>li*`, `div.card>#if[visible]`, or `@card[title="x"]`, also in square bracket templates
+- Extract to Function, Extract to `<#local>`, and Extract to `<#assign>` for a selected expression (code actions and commands)
+- Toggle Block Comment (`Ctrl+Shift+A`) inserts `[#-- --]` in square bracket templates instead of `<#-- -->`
+
+Changed
+
+- Format Document: text over several lines is indented by one level, also when several elements are opened on its first line (`<p>Text <b>bold` no longer indents the next line by two levels)
+- Format Document: an interpolation over several lines (`${message(` ... `)}`) is indented like a tag over several lines
+- Names that are declared nowhere are reported as information instead of warnings, with the hint that they may come from the data model
+
+Fixed
+
+- Square bracket syntax: the code actions and the messages of Extract to Macro and Surround With show `[#if]` and `[#list]` instead of `<#if>` and `<#list>`
+- Format Document no longer changes the lines of a string over several lines (`<#assign text = "one\n  two">`), whose spaces are part of its value
+- A `>` in parentheses (`<#if (a > 1) && b>`) no longer ends the tag for Find All References and Rename, so names after it are found
+
 ## 0.1.7 - 2026-10-19
 
 Added

@@ -28,4 +28,42 @@ function toggleLineComments(lines, tagSyntax = 'angle') {
   return lines.map((line) => (isTarget(line) ? `${open} ${line.trimEnd()} ${close}` : line));
 }
 
-module.exports = { toggleLineComments };
+// Takes away the comment that text[start, end) is in or consists of, or puts the selection
+// into a comment. Returns the replaced part { start, end, text } and the selection after
+// the edit { selectionStart, selectionEnd }, both as offsets in the original text plus the
+// length of the replacement.
+function toggleBlockComment(text, start, end, tagSyntax = 'angle') {
+  const [open, close] = COMMENT_TOKENS[tagSyntax] || COMMENT_TOKENS.angle;
+  let contentStart = start;
+  let contentEnd = end;
+  while (contentStart < contentEnd && /\s/.test(text[contentStart])) contentStart += 1;
+  while (contentEnd > contentStart && /\s/.test(text[contentEnd - 1])) contentEnd -= 1;
+
+  const commentStart = text.lastIndexOf(open, contentStart);
+  const commentClose = commentStart < 0 ? -1 : text.indexOf(close, commentStart + open.length);
+  if (commentClose >= 0 && commentClose + close.length >= contentEnd) {
+    let innerStart = commentStart + open.length;
+    let innerEnd = commentClose;
+    if (text[innerStart] === ' ' && innerEnd > innerStart) innerStart += 1;
+    if (text[innerEnd - 1] === ' ' && innerEnd > innerStart) innerEnd -= 1;
+    const inner = text.slice(innerStart, innerEnd);
+    return {
+      start: commentStart,
+      end: commentClose + close.length,
+      text: inner,
+      selectionStart: commentStart,
+      selectionEnd: commentStart + inner.length
+    };
+  }
+
+  const selected = text.slice(start, end);
+  return {
+    start,
+    end,
+    text: selected ? `${open} ${selected} ${close}` : `${open}  ${close}`,
+    selectionStart: start + open.length + 1,
+    selectionEnd: start + open.length + 1 + selected.length
+  };
+}
+
+module.exports = { toggleBlockComment, toggleLineComments };

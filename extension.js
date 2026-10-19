@@ -2,7 +2,7 @@ const path = require('path');
 const vscode = require('vscode');
 const snippets = require('./snippets/freemarker.json');
 const { BUILTINS, builtinBefore, builtinNameStart, builtinSignature, findBuiltin } = require('./builtins');
-const { toggleLineComments } = require('./comments');
+const { toggleBlockComment, toggleLineComments } = require('./comments');
 const { formatTemplate } = require('./formatter');
 const {
   DIRECTIVES,
@@ -13,9 +13,10 @@ const {
 } = require('./directives');
 const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
 const { displayText, isRawStringStart, normalizeTemplate, toSquareBracketTags } = require('./syntax');
-const { analyzeExtraction, checkSelection } = require('./extract-macro');
+const { analyzeExtraction, checkExpression, checkSelection } = require('./extract-macro');
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
+const { wrapWithAbbreviation } = require('./wrap');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 // For text that has already been rewritten to the default syntax.
@@ -31,6 +32,7 @@ const semanticTokensLegend = new vscode.SemanticTokensLegend(
 );
 const pathTriggerCharacters = ['"', "'", '/'];
 const htmlTagNamePattern = /^[A-Za-z][A-Za-z0-9:-]*$/;
+
 const autoCloseDirectives = new Set([
   'if', 'list', 'foreach', 'switch', 'macro', 'function', 'attempt', 'compress',
   'noparse', 'outputformat', 'autoesc', 'noautoesc', 'escape', 'transform',
@@ -396,12 +398,68 @@ class TemplateWorkspaceIndex {
     return records;
   }
 
-  importedRecord(record, alias) {
+  // The import that declares the alias, in the template or the templates it includes.
+  importDirective(record, alias) {
     for (const source of this.includedRecords(record)) {
       const directive = source.directives.find((item) => item.kind === 'import' && item.alias === alias);
-      if (directive) return this.resolveTemplate(source, directive.path);
+      if (directive) return { source, directive };
     }
     return undefined;
+  }
+
+  importedRecord(record, alias) {
+    const found = this.importDirective(record, alias);
+    return found && this.resolveTemplate(found.source, found.directive.path);
+  }
+
+  // The aliases in the qualified names of the template (alias.name, alias.nested.name),
+  // each with the import that declares it.
+  aliasUses(record) {
+    const uses = [];
+    const qualified = /\b((?:[A-Za-z_][A-Za-z0-9_]*\.)+)([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    let match;
+    while ((match = qualified.exec(record.source)) !== null) {
+      if (record.source[match.index - 1] === '.'
+        || !this.isFreeMarkerExpression(record.source, match.index, match.index)) continue;
+      let owner = record;
+      let segmentStart = match.index;
+      for (const segment of match[1].slice(0, -1).split('.')) {
+        const found = owner && this.importDirective(owner, segment);
+        if (!found) break;
+        uses.push({ offset: segmentStart, length: segment.length, ...found });
+        owner = this.resolveTemplate(found.source, found.directive.path);
+        segmentStart += segment.length + 1;
+      }
+    }
+    return uses;
+  }
+
+  // The import whose alias is declared or used at the offset.
+  aliasAt(record, offset) {
+    const directive = record.directives.find((item) => item.kind === 'import' && item.alias
+      && offset >= item.aliasOffset && offset <= item.aliasOffset + item.alias.length);
+    if (directive) return { source: record, directive, offset: directive.aliasOffset, length: directive.alias.length };
+    return this.aliasUses(record).find((use) => offset >= use.offset && offset <= use.offset + use.length);
+  }
+
+  // The declaration and the uses of the alias of an import, in all templates.
+  async aliasLocations({ source, directive }) {
+    const sourceKey = this.key(source.uri);
+    const found = [{ record: source, offset: directive.aliasOffset, length: directive.alias.length }];
+    for (const record of this.records.values()) {
+      for (const use of this.aliasUses(record)) {
+        if (this.key(use.source.uri) !== sourceKey || use.directive.aliasOffset !== directive.aliasOffset) continue;
+        found.push({ record, offset: use.offset, length: use.length });
+      }
+    }
+    const locations = [];
+    for (const { record, offset, length } of found) {
+      const document = await vscode.workspace.openTextDocument(record.uri);
+      locations.push(new vscode.Location(record.uri, new vscode.Range(
+        document.positionAt(offset), document.positionAt(offset + length)
+      )));
+    }
+    return locations;
   }
 
   resolveNamespaceRecord(record, aliases, includePrivate = false) {
@@ -561,7 +619,7 @@ class TemplateWorkspaceIndex {
 
     const analysis = analyzeExtraction(record.source, start, end, this.visibleLocals(record, start, end));
     if (analysis.error) {
-      vscode.window.showWarningMessage(`Extract to macro: ${analysis.error}`);
+      vscode.window.showWarningMessage(this.tagText(record, `Extract to macro: ${analysis.error}`));
       return;
     }
     const taken = new Set(this.includedSymbols(record).map(({ symbol }) => symbol.name));
@@ -612,6 +670,96 @@ class TemplateWorkspaceIndex {
     await vscode.workspace.applyEdit(edit);
   }
 
+  // The macro or function that contains source[start, end), the innermost one.
+  enclosingCallable(record, start, end) {
+    return templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks
+      .filter((block) => block.kind === 'directive' && (block.name === 'macro' || block.name === 'function')
+        && block.open.offset + block.open.length <= start && block.close.offset >= end)
+      .sort((left, right) => right.open.offset - left.open.offset)[0];
+  }
+
+  // The kinds of extraction the selected expression allows: function, assign, and local
+  // inside a macro or function. Nothing if the selection is not a whole expression.
+  expressionExtractions(record, start, end) {
+    const checked = checkExpression(record.source, start, end);
+    if (checked.error) return [];
+    return this.enclosingCallable(record, checked.start, checked.end)
+      ? ['function', 'local', 'assign'] : ['function', 'assign'];
+  }
+
+  // Moves the selected expression into a new function that is called in its place, or into a
+  // variable (<#assign> or <#local>) that is set before the tag or interpolation it is in.
+  async extractExpression(document, range, kind) {
+    await this.ready;
+    const record = this.currentRecord(document);
+    const text = document.getText();
+    const label = kind === 'function' ? 'Extract to function' : this.tagText(record, `Extract to <#${kind}>`);
+    const checked = checkExpression(record.source, document.offsetAt(range.start), document.offsetAt(range.end));
+    const container = !checked.error && this.enclosingCallable(record, checked.start, checked.end);
+    const error = checked.error || (kind === 'local' && !container ? 'The selection is not inside a macro or function.' : undefined);
+    if (error) {
+      vscode.window.showWarningMessage(`${label}: ${this.tagText(record, error)}`);
+      return;
+    }
+    const { start, end } = checked;
+    const locals = this.visibleLocals(record, start, end);
+    const taken = new Set([...this.includedSymbols(record).map(({ symbol }) => symbol.name), ...locals]);
+    const name = await vscode.window.showInputBox({
+      prompt: kind === 'function' ? 'Name of the new function' : 'Name of the new variable',
+      validateInput: (value) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
+        ? 'Use letters, digits, and underscores, and do not start with a digit.'
+        : taken.has(value) ? `"${value}" is already defined.` : undefined
+    });
+    if (!name) return;
+
+    const square = record.tagSyntax === 'square';
+    const tag = (content) => (square ? `[${content}]` : `<${content}>`);
+    let expression = text.slice(start, end);
+    // A > that was fine in an interpolation would end an angle bracket tag.
+    if (!square && findTagEnd(`<#return ${expression}>`, 1) !== `<#return ${expression}>`.length - 1) {
+      expression = `(${expression})`;
+    }
+    const options = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document === document
+      ? vscode.window.activeTextEditor.options : {};
+    const unit = options.insertSpaces === false ? '\t' : ' '.repeat(Math.max(1, Number(options.tabSize) || 4));
+    const newline = text.includes('\r\n') ? '\r\n' : '\n';
+    const edit = new vscode.WorkspaceEdit();
+
+    if (kind === 'function') {
+      const parameters = [];
+      for (const { name: used, member, assigned } of identifiers(record.source, start, end)) {
+        if (!member && !assigned && locals.has(used) && !parameters.includes(used)) parameters.push(used);
+      }
+      const definition = [
+        tag(`#function ${name}${parameters.map((parameter) => ` ${parameter}`).join('')}`),
+        `${unit}${tag(`#return ${expression}`)}`,
+        tag('/#function')
+      ].join(newline);
+      // After the macro or function that contains the selection, otherwise at the end.
+      const insertAt = container ? container.close.offset + container.close.length : text.length;
+      const separator = container || !text.endsWith('\n') ? newline + newline : newline;
+      edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(end)),
+        `${name}(${parameters.join(', ')})`);
+      edit.insert(document.uri, document.positionAt(insertAt), `${separator}${definition}${container ? '' : newline}`);
+    } else {
+      // Before the line of the tag or interpolation, or before the block whose branch it is,
+      // such as the <#if> of an <#elseif>.
+      let anchor = checked.outer.tagStart ?? checked.outer.start - 2;
+      const branchOf = templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks
+        .find((block) => block.branches.some((branch) => branch.offset === anchor));
+      if (branchOf) anchor = branchOf.open.offset;
+      if (kind === 'local' && anchor <= container.open.offset) {
+        vscode.window.showWarningMessage(`${label}: ${this.tagText(record, 'The expression must be in the body of the macro or function.')}`);
+        return;
+      }
+      const { lineStart } = this.lineLayout(text, anchor, anchor);
+      const indent = /^[ \t]*/.exec(text.slice(lineStart))[0];
+      edit.insert(document.uri, document.positionAt(lineStart), `${indent}${tag(`#${kind} ${name} = ${expression}`)}${newline}`);
+      edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(end)), name);
+    }
+    await vscode.workspace.applyEdit(edit);
+  }
+
   // The selection widened to the whole lines it touches, without the indentation of the
   // first line and the whitespace after the last. A selection that ends at the start of a
   // line does not include that line.
@@ -646,7 +794,7 @@ class TemplateWorkspaceIndex {
 
     const checked = checkSelection(record.source, start, end);
     if (checked.error) {
-      vscode.window.showWarningMessage(`Surround with <#${directive}>: ${checked.error}`);
+      vscode.window.showWarningMessage(this.tagText(record, `Surround with <#${directive}>: ${checked.error}`));
       return;
     }
     const options = editor.options || {};
@@ -668,6 +816,48 @@ class TemplateWorkspaceIndex {
       target = new vscode.Range(document.positionAt(start), document.positionAt(end));
     }
     await editor.insertSnippet(new vscode.SnippetString(snippet), target);
+  }
+
+  // Wraps the selection in the tags of an Emmet-like abbreviation, such as div.card>#if or ul>li*.
+  // Whole lines get a tag per line; a selection inside a line is wrapped on that line.
+  async wrapWithAbbreviation(document, range) {
+    await this.ready;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document !== document) return;
+    const record = this.currentRecord(document);
+    const text = document.getText();
+    let start = document.offsetAt(range.start);
+    let end = document.offsetAt(range.end);
+    // A selection that ends at the start of a line does not include that line.
+    if (end > start && text[end - 1] === '\n') end -= text[end - 2] === '\r' ? 2 : 1;
+    while (start < end && /\s/.test(text[start])) start += 1;
+    while (end > start && /\s/.test(text[end - 1])) end -= 1;
+    if (start === end) return;
+
+    const options = editor.options || {};
+    const { lineStart, lineEnd, indent, wholeLines } = this.lineLayout(text, start, end);
+    const wrapOptions = {
+      tagSyntax: record.tagSyntax,
+      block: wholeLines,
+      indent,
+      unit: options.insertSpaces === false ? '\t' : ' '.repeat(Math.max(1, Number(options.tabSize) || 4)),
+      newline: text.includes('\r\n') ? '\r\n' : '\n'
+    };
+    const selected = text.slice(start, end);
+    const abbreviation = await vscode.window.showInputBox({
+      prompt: 'Abbreviation, such as div.card, ul>li*, #if>p, or @card[title="x"]',
+      validateInput: (value) => value.trim() && wrapWithAbbreviation(value, selected, wrapOptions).error
+    });
+    if (!abbreviation) return;
+    const wrapped = wrapWithAbbreviation(abbreviation, selected, wrapOptions);
+    if (wrapped.error) {
+      vscode.window.showWarningMessage(`Wrap with abbreviation: ${wrapped.error}`);
+      return;
+    }
+    const target = wholeLines
+      ? new vscode.Range(document.positionAt(lineStart), document.positionAt(lineEnd))
+      : new vscode.Range(document.positionAt(start), document.positionAt(end));
+    await editor.insertSnippet(new vscode.SnippetString(wrapped.snippet), target);
   }
 
   macroArgumentCompletions(record, source, cursorOffset) {
@@ -802,6 +992,61 @@ class TemplateWorkspaceIndex {
     );
   }
 
+  // Aliases that no import declares: the first name of a macro call such as <@cardz.render />,
+  // which can only be a namespace, and a name after a namespace that the imported template
+  // neither imports nor declares, as in toolkit.nestd.render. A name such as ${user.name} may
+  // come from the data model, which the warning about undeclared names covers. A template
+  // that is included sees the aliases and variables of the templates that include it.
+  wrongAliases(record) {
+    const issues = [];
+    const { source } = record;
+    const includers = [...this.records.values()]
+      .filter((other) => other !== record && this.includesRecord(other, this.key(record.uri)));
+    const visibleFrom = [record, ...includers];
+    const parameterScopes = this.parameters(record);
+    const qualified = /(?<![A-Za-z0-9_.?])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)/g;
+    let match;
+    while ((match = qualified.exec(source)) !== null) {
+      if (!this.isFreeMarkerExpression(source, match.index, match.index)) continue;
+      const segments = match[1].split('.');
+      let owner = record;
+      let segmentStart = match.index;
+      for (let index = 0; index < segments.length - 1; index += 1) {
+        const segment = segments[index];
+        const found = index === 0
+          ? visibleFrom.map((other) => this.importDirective(other, segment)).find(Boolean)
+          : this.importDirective(owner, segment);
+        if (found) {
+          owner = this.resolveTemplate(found.source, found.directive.path);
+          if (!owner) break;
+          segmentStart += segment.length + 1;
+          continue;
+        }
+        if (index === 0) {
+          const declared = visibleFrom.some((other) => this.includedSymbols(other).some(({ symbol }) => symbol.name === segment))
+            || parameterScopes.some(({ params, block }) => block.open.offset < segmentStart && segmentStart < block.close.offset
+              && params.some((param) => param.name === segment));
+          if (this.isMacroInvocation(source, match.index) && !declared) {
+            issues.push({
+              message: `"${segment}" is not the alias of an <#import>.`,
+              offset: segmentStart,
+              length: segment.length
+            });
+          }
+        } else if (!this.includedSymbols(owner).some(({ symbol }) => symbol.name === segment)
+          && !this.hasUnresolvedIncludes(owner)) {
+          issues.push({
+            message: `"${segment}" is not the alias of an <#import> in namespace "${segments.slice(0, index).join('.')}" (${path.basename(owner.uri.fsPath)}).`,
+            offset: segmentStart,
+            length: segment.length
+          });
+        }
+        break;
+      }
+    }
+    return issues.map((issue) => ({ ...issue, message: this.tagText(record, issue.message) }));
+  }
+
   // Problems that only show up with knowledge of the other templates in the workspace.
   semanticIssues(record) {
     const issues = [];
@@ -884,7 +1129,7 @@ class TemplateWorkspaceIndex {
       }
     }
 
-    // The data model is not known, so a name that is declared nowhere is only a warning.
+    // The data model is not known, so a name that is declared nowhere is only an information.
     // Names from a template that was not found could be among the missing ones.
     if (!this.hasUnresolvedIncludes(record)) {
       const qualified = /(?<![A-Za-z0-9_.?])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)/g;
@@ -904,14 +1149,16 @@ class TemplateWorkspaceIndex {
           severity: 'warning'
         });
       }
+      const wrongAliases = this.wrongAliases(record);
+      issues.push(...wrongAliases);
       const reportUndeclared = vscode.workspace.getConfiguration('freemarker').get('validateUndeclaredNames', true);
       for (const token of reportUndeclared ? semanticTokens(source, { ...this.declaredElsewhere(record), reportUnknown: true }) : []) {
-        if (token.type !== 'unknown') continue;
+        if (token.type !== 'unknown' || wrongAliases.some((issue) => issue.offset === token.offset)) continue;
         issues.push({
-          message: `"${source.slice(token.offset, token.offset + token.length)}" is not declared in this template or the ones it includes or imports.`,
+          message: `"${source.slice(token.offset, token.offset + token.length)}" is not declared in this template or the ones it includes or imports. It may come from the data model.`,
           offset: token.offset,
           length: token.length,
-          severity: 'warning'
+          severity: 'info'
         });
       }
     }
@@ -1284,8 +1531,10 @@ class TemplateWorkspaceIndex {
     }
     if (openingOffset < 0) return false;
 
-    const closing = opening === '${' || opening === '#{' ? '}' : '>';
-    const closingOffset = source.indexOf(closing, openingOffset + opening.length);
+    // A > in parentheses, as in <#if (a > 1)>, does not end the tag.
+    const closingOffset = opening === '${' || opening === '#{'
+      ? source.indexOf('}', openingOffset + opening.length)
+      : findTagEnd(source, openingOffset + opening.length);
     if (closingOffset >= 0 && cursorOffset > closingOffset) return false;
 
     let quote = null;
@@ -1755,6 +2004,8 @@ class TemplateWorkspaceIndex {
         document.positionAt(use.offset), document.positionAt(use.offset + use.length)
       )));
     }
+    const alias = this.aliasAt(this.currentRecord(document), document.offsetAt(position));
+    if (alias) return (await this.aliasLocations(alias)).slice(1);
     const target = await this.symbolAt(document, position);
     if (!target) return [];
 
@@ -1867,6 +2118,13 @@ class TemplateWorkspaceIndex {
         placeholder: parameter.name
       };
     }
+    const alias = this.aliasAt(this.currentRecord(document), document.offsetAt(position));
+    if (alias) {
+      return {
+        range: new vscode.Range(document.positionAt(alias.offset), document.positionAt(alias.offset + alias.length)),
+        placeholder: alias.directive.alias
+      };
+    }
     const target = await this.symbolAt(document, position);
     if (!target) return undefined;
 
@@ -1934,6 +2192,17 @@ class TemplateWorkspaceIndex {
         parameterEdit.replace(callUri, range, newName);
       }
       return parameterEdit;
+    }
+    const alias = this.aliasAt(this.currentRecord(document), document.offsetAt(position));
+    if (alias) {
+      if (newName !== alias.directive.alias && this.importDirective(alias.source, newName)) {
+        throw new Error(`'${newName}' is already the alias of another import.`);
+      }
+      const aliasEdit = new vscode.WorkspaceEdit();
+      for (const { uri: aliasUri, range } of await this.aliasLocations(alias)) {
+        aliasEdit.replace(aliasUri, range, newName);
+      }
+      return aliasEdit;
     }
     const target = await this.symbolAt(document, position);
     if (!target) return undefined;
@@ -2173,7 +2442,8 @@ function activate(context) {
       const entries = issues.map((issue) => new vscode.Diagnostic(
         new vscode.Range(document.positionAt(issue.offset), document.positionAt(issue.offset + issue.length)),
         issue.message,
-        issue.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error
+        { warning: vscode.DiagnosticSeverity.Warning, info: vscode.DiagnosticSeverity.Information }[issue.severity]
+          ?? vscode.DiagnosticSeverity.Error
       ));
       if (entries.length) diagnostics.set(document.uri, entries);
       else diagnostics.delete(document.uri);
@@ -2236,10 +2506,11 @@ function activate(context) {
     vscode.languages.registerCodeActionsProvider({ language: 'freemarker' }, {
       provideCodeActions: (document, range) => {
         if (range.isEmpty) return [];
+        const record = index.currentRecord(document);
         const action = new vscode.CodeAction('Extract to macro', vscode.CodeActionKind.RefactorExtract);
         action.command = { command: 'freemarker.extractMacro', title: 'Extract to macro', arguments: [document, range] };
         const surround = ['list', 'if'].map((directive) => {
-          const surroundAction = new vscode.CodeAction(`Surround with <#${directive}>`, vscode.CodeActionKind.RefactorRewrite);
+          const surroundAction = new vscode.CodeAction(index.tagText(record, `Surround with <#${directive}>`), vscode.CodeActionKind.RefactorRewrite);
           surroundAction.command = {
             command: 'freemarker.surroundWith',
             title: surroundAction.title,
@@ -2247,7 +2518,16 @@ function activate(context) {
           };
           return surroundAction;
         });
-        return [action, ...surround];
+        const expressionActions = index.expressionExtractions(record, document.offsetAt(range.start), document.offsetAt(range.end))
+          .map((kind) => {
+            const title = kind === 'function' ? 'Extract to function' : index.tagText(record, `Extract to <#${kind}>`);
+            const expressionAction = new vscode.CodeAction(title, vscode.CodeActionKind.RefactorExtract);
+            expressionAction.command = { command: `freemarker.extract${kind[0].toUpperCase()}${kind.slice(1)}`, title, arguments: [document, range] };
+            return expressionAction;
+          });
+        const wrapAction = new vscode.CodeAction('Wrap with abbreviation…', vscode.CodeActionKind.RefactorRewrite);
+        wrapAction.command = { command: 'freemarker.wrapWithAbbreviation', title: wrapAction.title, arguments: [document, range] };
+        return [...expressionActions, action, ...surround, wrapAction];
       }
     }, { providedCodeActionKinds: [vscode.CodeActionKind.RefactorExtract, vscode.CodeActionKind.RefactorRewrite] }),
     vscode.commands.registerCommand('freemarker.surroundWith', (document, range, directive) => {
@@ -2255,6 +2535,19 @@ function activate(context) {
       const target = document ?? (editor && editor.document);
       const selection = range ?? (editor && editor.selection);
       if (target && selection) return index.surroundWith(target, selection, directive ?? 'if');
+    }),
+    ...['function', 'assign', 'local'].map((kind) =>
+      vscode.commands.registerCommand(`freemarker.extract${kind[0].toUpperCase()}${kind.slice(1)}`, (document, range) => {
+        const editor = vscode.window.activeTextEditor;
+        const target = document ?? (editor && editor.document);
+        const selection = range ?? (editor && editor.selection);
+        if (target && selection) return index.extractExpression(target, selection, kind);
+      })),
+    vscode.commands.registerCommand('freemarker.wrapWithAbbreviation', (document, range) => {
+      const editor = vscode.window.activeTextEditor;
+      const target = document ?? (editor && editor.document);
+      const selection = range ?? (editor && editor.selection);
+      if (target && selection) return index.wrapWithAbbreviation(target, selection);
     }),
     vscode.commands.registerCommand('freemarker.extractMacro', (document, range) => {
       const editor = vscode.window.activeTextEditor;
@@ -2327,6 +2620,35 @@ function activate(context) {
           );
         });
       }
+    }),
+    // The editor's own Toggle Block Comment only knows <#-- -->.
+    vscode.commands.registerCommand('freemarker.toggleBlockComment', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return undefined;
+      const { document } = editor;
+      const { tagSyntax } = index.currentRecord(document);
+      const text = document.getText();
+      const toggles = [...editor.selections]
+        .map((selection) => toggleBlockComment(text, document.offsetAt(selection.start), document.offsetAt(selection.end), tagSyntax))
+        .sort((left, right) => left.start - right.start)
+        .filter((toggle, position, sorted) => position === 0 || toggle.start >= sorted[position - 1].end);
+      return editor.edit((editBuilder) => {
+        for (const toggle of toggles) {
+          editBuilder.replace(new vscode.Range(document.positionAt(toggle.start), document.positionAt(toggle.end)), toggle.text);
+        }
+      }).then((applied) => {
+        if (!applied) return;
+        // The selections in the edited text: each edit before one moves it.
+        let shift = 0;
+        editor.selections = toggles.map((toggle) => {
+          const selection = new vscode.Selection(
+            editor.document.positionAt(toggle.selectionStart + shift),
+            editor.document.positionAt(toggle.selectionEnd + shift)
+          );
+          shift += toggle.text.length - (toggle.end - toggle.start);
+          return selection;
+        });
+      });
     }),
     vscode.workspace.onDidOpenTextDocument((document) => {
       if (document.languageId === 'freemarker') {

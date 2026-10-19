@@ -33,6 +33,7 @@ Completion labels show what is known about a symbol: the value assigned to a var
 - **Go to Definition** for macros, functions, namespace members, variables (including capture assignments, loop variables, and fields of hash literals), namespace aliases, and `import`/`include` paths. On a macro or function declaration it lists the call sites instead.
 - **Find All References** and **Rename Symbol** for variables, macros, and functions, across all templates that import or include them.
 - **Macro and function parameters** work like local variables: Go to Definition, Find All References, and Rename Symbol, including the named arguments in calls such as `<@card title="x" />`.
+- **Import aliases**: Find All References and Rename Symbol on the alias of an `<#import>`, at the import or at a use such as `<@cards.render />`, cover the import and every `cards.` in the templates that see it, but not an alias of the same name declared by another import.
 - **Clickable paths** in `<#import>` and `<#include>`.
 - **Outline** with imports and includes, variables, functions, and macros, in the order of the template.
 - **Workspace symbol search** (`Ctrl+T`) for macros, functions, and variables in all templates.
@@ -54,6 +55,7 @@ Reported as errors:
 - Directives without the parameters they need (`<#if>`, `<#list>`) or with parameters they do not take (`<#else x>`), `<#import>` and `<#items>` without `as name`, and `<#macro>` or `<#function>` without a name
 - Hash literals with a missing `:` or `,`, a missing key or value, or an empty entry, and unclosed or mismatched `(`, `[`, and `{`
 - Arguments that a macro has no parameter for, such as `<@card titel="x" />`, unless the macro has a catch-all parameter (`others...`)
+- Aliases that no `<#import>` declares: the namespace of a macro call, such as `cardz` in `<@cardz.render />`, and a namespace inside an imported one, such as `nestd` in `${toolkit.nestd.label}`. A template that is included sees the aliases of the templates that include it. A name such as `${user.name}` may come from the data model and is only reported as undeclared (an information)
 
 Reported as warnings:
 
@@ -64,18 +66,29 @@ Reported as warnings, based on the workspace index:
 - `import`/`include` paths that cannot be found
 - Names that are not defined in an imported namespace, such as `<@cards.rendr />`
 - Macro calls that leave out a required parameter
-- Names that are declared neither in the template nor in the ones it includes or imports. They may come from the data model, which the extension does not know, so they are only warnings. They are not reported while one of the included or imported templates cannot be found, and can be turned off with `freemarker.validateUndeclaredNames`.
+
+Reported as information, based on the workspace index:
+
+- Names that are declared neither in the template nor in the ones it includes or imports, with the hint that they may come from the data model, which the extension does not know. They are not reported while one of the included or imported templates cannot be found, and can be turned off with `freemarker.validateUndeclaredNames`.
 
 Templates in diff and merge editors, and files with unresolved merge conflicts, are not checked.
 
 ### Formatting and editing
 
-- **Format Document** indents nested FreeMarker blocks, paired `<@...>` calls, and HTML elements. End tags line up with their start tags, and the entries of multi-line hashes and sequences are indented like JSON. Lines are never split or joined, so an element with its start and end tag on one line stays on that line. An HTML element without an end tag, such as `<li>` or `<br>`, does not indent what follows. The content of `<pre>` and `<textarea>` is left alone, and scripts and style sheets keep their own indentation. Regions between `<#-- @formatter:off -->` and `<#-- @formatter:on -->` are left as they are.
+- **Format Document** indents nested FreeMarker blocks, paired `<@...>` calls, and HTML elements. End tags line up with their start tags, and the entries of multi-line hashes and sequences are indented like JSON. Lines are never split or joined, so an element with its start and end tag on one line stays on that line. Text over several lines is indented by one level below its first line, also when that line opens several elements (`<p>Text <b>bold`), and interpolations over several lines are indented like tags. The lines of a string over several lines are left as they are, since their spaces are part of the value. An HTML element without an end tag, such as `<li>` or `<br>`, does not indent what follows. The content of `<pre>` and `<textarea>` is left alone, and scripts and style sheets keep their own indentation. Regions between `<#-- @formatter:off -->` and `<#-- @formatter:on -->` are left as they are.
 - **Folding** for FreeMarker blocks and comments. The parts before and after `<#else>` fold separately.
 - **Automatic end tags**: typing `>` after a start tag inserts the end tag, for HTML elements, block directives, and `<@...>` calls, but not inside string literals. Typing `</` completes the end tag of the innermost element or block that is still open.
 - **Extract to Macro** (light bulb or the command **FreeMarker: Extract to Macro**): moves the selected part of a template into a new macro and calls it in its place. Local variables, loop variables, and parameters that the selection uses become parameters of the macro. The selection must not cut through a tag, an interpolation, or an HTML element, and must contain complete directives.
+- **Wrap with Abbreviation** (light bulb or the command **FreeMarker: Wrap with Abbreviation**): wraps the selection in the tags of an Emmet-like abbreviation. Whole lines get one tag per line and are indented; a selection inside a line stays on it.
+  - `div.card#main[data-id="1" hidden]`: an element with classes, an id, and attributes; `.note` alone is a `div` (an `li` in a list, a `td` in a row, ...)
+  - `ul>li` nests, `h2+div` adds a sibling, and the selection goes into the last element
+  - `ul>li*` wraps each selected line in an `li`; `$` in an attribute is the number of the line
+  - `#if`, `#list[users as user]`, `#assign[name]`: FreeMarker directives with an end tag, with their parameters in `[]`, or a placeholder for them; `#main` is still an id
+  - `@card[title="x"]`: a macro call
+- **Extract to Function**, **Extract to `<#local>`**, and **Extract to `<#assign>`** (light bulb or the commands of the same name): moves the selected expression into a new function that is called in its place, or into a variable that is set on the line before the tag or interpolation (before the `<#if>` of an `<#elseif>`). Local variables, loop variables, and parameters that the expression uses become parameters of the function. `<#local>` is offered inside macros and functions. The selection must be a whole expression: `b + c` in `a * b + c` is refused, `(b + c)` is not.
 - **Surround with `<#list>` / `<#if>`** (light bulb): wraps the selected lines in a directive; the missing parts of its start tag are placeholders.
 - **Toggle Line Comment** (`Ctrl+/`) puts every selected line into a FreeMarker comment of its own, `<#-- ... -->` or `[#-- ... --]` depending on the tag syntax of the template, and removes the comments again. The comment starts at the beginning of the line and the indentation stays inside it.
+- **Toggle Block Comment** (`Ctrl+Shift+A`, `Shift+Alt+A` on macOS) puts the selection into `<#-- ... -->` or `[#-- ... --]`, depending on the tag syntax, or takes away the comment the selection is in.
 - **Moving templates**: when a template or a folder of templates is moved or renamed in VS Code, the `<#import>` and `<#include>` paths that lead to it and from it are updated. A path keeps its form: relative to the template, relative to the workspace folder or a template root, with a leading `/`, or without an extension. By default VS Code asks first; `freemarker.updatePathsOnFileMove` changes that.
 - **Rename HTML tags**: **Rename Symbol** (`F2`) on the name of an HTML start tag renames its end tag as well.
 - **Matching tags**: with the cursor on a tag, the start tag, the end tag, and branch tags such as `<#else>` of the same block are highlighted.
@@ -115,16 +128,15 @@ The two are independent: `[#if x]${y}[/#if]` and `<#if x>[=y]</#if>` are both po
 | `freemarker.interpolationSyntax` | `legacy` | `legacy` (`${x}` and `#{x}`), `dollar` (only `${x}`), or `squareBracket` (only `[=x]`), matching the `interpolation_syntax` setting of FreeMarker. |
 | `freemarker.validateTemplatePaths` | `true` | Warn about `import`/`include` paths that cannot be found. Turn this off if templates are loaded from outside the workspace, for example from a JAR. |
 | `freemarker.validateHtmlTags` | `true` | Warn about HTML tags that are never closed and about closing HTML tags without a start tag. Turn this off if the templates produce something other than HTML. |
-| `freemarker.validateUndeclaredNames` | `true` | Warn about names that are declared neither in the template nor in the templates it includes or imports. Turn this off if the templates use many names from the data model. |
+| `freemarker.validateUndeclaredNames` | `true` | Report names that are declared neither in the template nor in the templates it includes or imports, as information. Turn this off if the templates use many names from the data model. |
 | `freemarker.updatePathsOnFileMove` | `prompt` | `prompt`, `always`, or `never`: whether the `import`/`include` paths are updated when a template or its folder is moved or renamed. |
 | `freemarker.privatePrefix` | `_` | Prefix that marks macros, functions, variables, and namespace aliases as private to their template. |
 
 ## Limitations
 
 - Syntax highlighting cannot tell which syntax a template uses, so it colors both. Text such as `[#note]` in an angle bracket template is colored like a tag, but is not treated as one anywhere else.
-- Toggle Block Comment always inserts `<#-- -->`, also in square bracket templates.
 - Only `import`/`include` paths written as plain string literals are followed. Paths that are computed at runtime are ignored.
-- Objects and methods that come from the Java data model are not known to the extension, so there is no completion for them, and their names are reported as undeclared (as warnings, which `freemarker.validateUndeclaredNames` turns off).
+- Objects and methods that come from the Java data model are not known to the extension, so there is no completion for them, and their names are reported as undeclared (as information, which `freemarker.validateUndeclaredNames` turns off).
 - Types are only inferred from literals, assignments of literals, and loop variables. Everything else gets the full, alphabetical list of built-ins.
 
 ## Development

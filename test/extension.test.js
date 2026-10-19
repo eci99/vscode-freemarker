@@ -189,6 +189,9 @@ const vscode = {
     constructor(anchor, active) {
       this.anchor = anchor;
       this.active = active;
+      const reversed = active.line < anchor.line || (active.line === anchor.line && active.character < anchor.character);
+      this.start = reversed ? active : anchor;
+      this.end = reversed ? anchor : active;
     }
   },
   Range,
@@ -199,7 +202,7 @@ const vscode = {
   DocumentSymbol,
   SymbolKind: { Function: 11, Method: 5, Variable: 12, Namespace: 2, Module: 1, File: 0 },
   Diagnostic,
-  DiagnosticSeverity: { Error: 0, Warning: 1 },
+  DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2 },
   CompletionItemTag: { Deprecated: 1 },
   CompletionItemKind: { Method: 1, Function: 2, Variable: 5, Module: 8, Property: 9, Keyword: 13, Snippet: 14, File: 16, Folder: 18, Constant: 20 },
   FoldingRangeKind: { Comment: 1 },
@@ -453,6 +456,7 @@ function positionAt(text, targetOffset) {
 }
 
 async function run() {
+  const initialFiles = new Map(files);
   const subscriptions = [];
   extension.activate({ subscriptions });
   const mainUri = uri('/virtual/work/pages/main.ftl');
@@ -559,6 +563,35 @@ async function run() {
   assert.strictEqual(toggleComments('a\nb\nc', [[0, 0, 0, 0], [2, 1, 2, 1]]), '<#-- a -->\nb\n<#-- c -->');
   assert.strictEqual(toggleComments('a\nb', [[0, 0, 1, 0], [0, 1, 1, 1]]), '<#-- a -->\n<#-- b -->');
   assert.strictEqual(toggleComments('[#if a]\ntext\n[/#if]', [[1, 0, 1, 0]]), '[#if a]\n[#-- text --]\n[/#if]');
+
+  // Toggle Block Comment uses the comment of the tag syntax and keeps the commented text selected.
+  const toggleBlock = async (text, selections) => {
+    const blockDocument = new Document(mainUri, text);
+    const editor = {
+      document: blockDocument,
+      selections: selections.map(([start, end]) => new vscode.Selection(blockDocument.positionAt(start), blockDocument.positionAt(end))),
+      edit: async (callback) => {
+        const replacements = [];
+        callback({ replace: (range, value) => replacements.push([blockDocument.offsetAt(range.start), blockDocument.offsetAt(range.end), value]) });
+        for (const [start, end, value] of replacements.reverse()) {
+          blockDocument.text = blockDocument.text.slice(0, start) + value + blockDocument.text.slice(end);
+        }
+        return true;
+      }
+    };
+    vscode.window.activeTextEditor = editor;
+    await registeredCommands['freemarker.toggleBlockComment']();
+    vscode.window.activeTextEditor = undefined;
+    return [blockDocument.text, editor.selections.map((selection) =>
+      [blockDocument.offsetAt(selection.anchor), blockDocument.offsetAt(selection.active)])];
+  };
+  assert.deepStrictEqual(await toggleBlock('[#if a]x[/#if] y', [[7, 8], [15, 16]]), [
+    '[#if a][#-- x --][/#if] [#-- y --]', [[12, 13], [29, 30]]
+  ]);
+  assert.deepStrictEqual(await toggleBlock('[#if a][#-- x --][/#if] [#-- y --]', [[12, 13], [29, 30]]), [
+    '[#if a]x[/#if] y', [[7, 8], [15, 16]]
+  ]);
+  assert.deepStrictEqual(await toggleBlock('<p></p>', [[3, 3]]), ['<p><#--  --></p>', [[8, 8]]]);
 
   const mainText = files.get(mainUri.fsPath);
   const document = new Document(mainUri, mainText);
@@ -1000,7 +1033,8 @@ async function run() {
   assert.deepStrictEqual(extractActions.map((action) => [action.title, action.kind, action.command.command]), [
     ['Extract to macro', 'refactor.extract', 'freemarker.extractMacro'],
     ['Surround with <#list>', 'refactor.rewrite', 'freemarker.surroundWith'],
-    ['Surround with <#if>', 'refactor.rewrite', 'freemarker.surroundWith']
+    ['Surround with <#if>', 'refactor.rewrite', 'freemarker.surroundWith'],
+    ['Wrap with abbreviation…', 'refactor.rewrite', 'freemarker.wrapWithAbbreviation']
   ]);
   assert.deepStrictEqual(providers.codeActions.provideCodeActions(extractDocument, new Range(0, 0, 0, 0)), []);
   inputName = 'itemRow';
@@ -1036,7 +1070,115 @@ async function run() {
   );
   await registeredCommands['freemarker.surroundWith'](extractDocument, cutRange, 'if');
   assert.strictEqual(shownWarnings.length, 2);
+
+  // Wrap with abbreviation: whole lines get a tag per line, a part of a line stays on it
+  inputName = 'div.row>#if[item.visible]';
+  await registeredCommands['freemarker.wrapWithAbbreviation'](extractDocument, extractRange);
+  assert.strictEqual(snippets[2][0], [
+    '    <div class="row">',
+    '        <#if item.visible>',
+    '            <p>\\${item.name\\} \\${title\\} \\${other\\}</p>',
+    '        </#if>',
+    '    </div>'
+  ].join('\n'));
+  assert.deepStrictEqual([snippets[2][1].start, snippets[2][1].end], [new Position(2, 0), new Position(2, extractText.split('\n')[2].length)]);
+  const titleStart = extractText.indexOf('${title}');
+  inputName = 'strong';
+  await registeredCommands['freemarker.wrapWithAbbreviation'](extractDocument, new Range(
+    extractDocument.positionAt(titleStart), extractDocument.positionAt(titleStart + '${title}'.length)));
+  assert.strictEqual(snippets[3][0], '<strong>\\${title\\}</strong>');
+  assert.strictEqual(extractDocument.offsetAt(snippets[3][1].start), titleStart);
+  // A selection to the start of the next line covers the lines before it
+  const listLines = 'a\nb\n';
+  const listDocument = new Document(mainUri, listLines);
+  vscode.window.activeTextEditor = { document: listDocument, options: { insertSpaces: true, tabSize: 2 }, insertSnippet: async (snippet, range) => snippets.push([snippet.value, range]) };
+  inputName = 'ul>li*';
+  await registeredCommands['freemarker.wrapWithAbbreviation'](listDocument, new Range(0, 0, 2, 0));
+  assert.strictEqual(snippets[4][0], '<ul>\n  <li>a</li>\n  <li>b</li>\n</ul>');
+  inputName = 'li*3';
+  await registeredCommands['freemarker.wrapWithAbbreviation'](listDocument, new Range(0, 0, 2, 0));
+  assert.strictEqual(shownWarnings[shownWarnings.length - 1], 'Wrap with abbreviation: Only * without a number is supported: one element for each line.');
+  vscode.window.activeTextEditor = { document: extractDocument, options: {}, insertSnippet: async (snippet, range) => snippets.push([snippet.value, range]) };
   vscode.window.activeTextEditor = undefined;
+
+  // Extract an expression to a function, <#local>, or <#assign>
+  const expressionText = [
+    '<#macro card title>',
+    '  <#list items as item>',
+    '    <p>${item.name?upper_case + " " + title}</p>',
+    '    <#if item.price * 2 gt 10>x<#elseif (item.price > 5)>y</#if>',
+    '  </#list>',
+    '</#macro>',
+    '${a + b}'
+  ].join('\n');
+  const expressionDocument = new Document(mainUri, expressionText);
+  const selectText = (needle, from = 0) => {
+    const start = expressionText.indexOf(needle, from);
+    return new Range(expressionDocument.positionAt(start), expressionDocument.positionAt(start + needle.length));
+  };
+  const extracted = async (kind, needle, name, from) => {
+    inputName = name;
+    const edits = appliedEdits.length;
+    const warnings = shownWarnings.length;
+    await registeredCommands[`freemarker.extract${kind}`](expressionDocument, selectText(needle, from));
+    if (shownWarnings.length > warnings) return shownWarnings[shownWarnings.length - 1];
+    if (appliedEdits.length === edits) return undefined;
+    return appliedEdits[appliedEdits.length - 1].get(mainUri)
+      .map((edit) => [expressionDocument.offsetAt(edit.range.start), expressionDocument.offsetAt(edit.range.end), edit.newText]);
+  };
+  const actionTitles = (needle) => providers.codeActions.provideCodeActions(expressionDocument, selectText(needle))
+    .map((action) => action.title);
+  const labelExpression = 'item.name?upper_case + " " + title';
+  const labelStart = expressionText.indexOf(labelExpression);
+  assert.deepStrictEqual(actionTitles(labelExpression).slice(0, 4),
+    ['Extract to function', 'Extract to <#local>', 'Extract to <#assign>', 'Extract to macro']);
+  assert.deepStrictEqual(actionTitles('a + b').slice(0, 3), ['Extract to function', 'Extract to <#assign>', 'Extract to macro']);
+  assert.deepStrictEqual(actionTitles('" " + title').slice(0, 1), ['Extract to macro']);
+  assert.deepStrictEqual(await extracted('Function', labelExpression, 'label'), [
+    [labelStart, labelStart + labelExpression.length, 'label(item, title)'],
+    [expressionText.indexOf('</#macro>') + '</#macro>'.length, expressionText.indexOf('</#macro>') + '</#macro>'.length,
+      `\n\n<#function label item title>\n    <#return ${labelExpression}>\n</#function>`]
+  ]);
+  const listBody = expressionText.indexOf('    <p>');
+  assert.deepStrictEqual(await extracted('Local', labelExpression, 'labelText'), [
+    [listBody, listBody, `    <#local labelText = ${labelExpression}>\n`],
+    [labelStart, labelStart + labelExpression.length, 'labelText']
+  ]);
+  // Before the <#if> of an <#elseif>, and a > that would end the tag in parentheses
+  const ifLine = expressionText.indexOf('    <#if');
+  const cheapStart = expressionText.indexOf('item.price > 5');
+  assert.deepStrictEqual(await extracted('Assign', '(item.price > 5)', 'cheap'), [
+    [ifLine, ifLine, '    <#assign cheap = (item.price > 5)>\n'],
+    [cheapStart - 1, cheapStart + 'item.price > 5'.length + 1, 'cheap']
+  ]);
+  assert.deepStrictEqual(await extracted('Assign', 'item.price > 5', 'cheap'), [
+    [ifLine, ifLine, '    <#assign cheap = (item.price > 5)>\n'],
+    [cheapStart, cheapStart + 'item.price > 5'.length, 'cheap']
+  ]);
+  assert.deepStrictEqual(await extracted('Function', 'a + b', 'sum'), [
+    [expressionText.indexOf('a + b'), expressionText.length - 1, 'sum()'],
+    [expressionText.length, expressionText.length, '\n\n<#function sum>\n    <#return a + b>\n</#function>\n']
+  ]);
+  // Selections that are not a whole expression
+  assert.strictEqual(await extracted('Assign', '" " + title', 'x'), 'Extract to <#assign>: Select a whole operand, or put parentheses around the expression.');
+  assert.strictEqual(await extracted('Assign', 'item.price * 2', 'x'), 'Extract to <#assign>: Select a whole operand, or put parentheses around the expression.');
+  assert.strictEqual(await extracted('Assign', 'name', 'x'), 'Extract to <#assign>: Select a whole expression, not a member or a built-in.');
+  assert.strictEqual(await extracted('Assign', 'ite', 'x'), 'Extract to <#assign>: The selection cuts through a name.');
+  assert.strictEqual(await extracted('Assign', 'items as item', 'x'), 'Extract to <#assign>: Select a single expression.');
+  assert.strictEqual(await extracted('Assign', '<p>', 'x'), 'Extract to <#assign>: Select an expression in an interpolation, a macro call, or a directive.');
+  assert.strictEqual(await extracted('Local', 'a + b', 'x'), 'Extract to <#local>: The selection is not inside a macro or function.');
+  assert.strictEqual(await extracted('Assign', 'title', 'x'), 'Extract to <#assign>: Select an expression in an interpolation, a macro call, or a directive.');
+  // Square bracket syntax
+  const squareExpressionText = '[#assign total = price * (count + 1)]';
+  const squareExpressionDocument = new Document(mainUri, squareExpressionText);
+  const countStart = squareExpressionText.indexOf('count + 1');
+  assert.deepStrictEqual(providers.codeActions.provideCodeActions(squareExpressionDocument, new Range(
+    squareExpressionDocument.positionAt(countStart), squareExpressionDocument.positionAt(countStart + 9))).map((action) => action.title).slice(0, 2),
+  ['Extract to function', 'Extract to [#assign]']);
+  inputName = 'next';
+  await registeredCommands['freemarker.extractAssign'](squareExpressionDocument, new Range(
+    squareExpressionDocument.positionAt(countStart), squareExpressionDocument.positionAt(countStart + 9)));
+  assert.deepStrictEqual(appliedEdits[appliedEdits.length - 1].get(mainUri).map((edit) => edit.newText), ['[#assign next = count + 1]\n', 'next']);
 
   // Interpolations in strings: definition and hover
   const stringUseText = `${mainText}\n<@cards.render title="Hi \${pageTitle}" />`;
@@ -1436,6 +1578,47 @@ async function run() {
   assert(closingLayoutPrepare);
   assert.strictEqual(closingLayoutPrepare.placeholder, 'layout');
 
+  // Renaming an alias renames its import and its uses, not an alias of the same name in another template
+  const aliasEditsOf = (edits) => Object.fromEntries(edits.entries().map(([target, items]) =>
+    [target.fsPath, items.map((item) => [item.range.start.line, item.range.start.character, item.newText])]));
+  const cardsAliasUse = mainText.indexOf('<@cards.render') + '<@'.length + 1;
+  const cardsAliasPrepare = await providers.rename.prepareRename(document, positionAt(mainText, cardsAliasUse));
+  assert.strictEqual(cardsAliasPrepare.placeholder, 'cards');
+  assert.strictEqual(document.offsetAt(cardsAliasPrepare.range.start), cardsAliasUse - 1);
+  const cardsAliasEdits = await providers.rename.provideRenameEdits(document, positionAt(mainText, cardsAliasUse), 'card');
+  assert.deepStrictEqual(Object.keys(aliasEditsOf(cardsAliasEdits)), [mainUri.fsPath]);
+  const cardsAliasOffsets = cardsAliasEdits.get(mainUri).map((edit) => document.offsetAt(edit.range.start));
+  assert.deepStrictEqual(cardsAliasOffsets, [
+    mainText.indexOf('as cards>') + 3,
+    ...[...mainText.matchAll(/[@{]cards\./g)].map((match) => match.index + 1)
+  ]);
+  assert.strictEqual(cardsAliasOffsets.length, 11);
+  assert(cardsAliasEdits.get(mainUri).every((edit) => edit.newText === 'card'));
+  const declarationAliasEdits = await providers.rename.provideRenameEdits(
+    document, positionAt(mainText, mainText.indexOf('as cards>') + 4), 'card');
+  assert.deepStrictEqual(aliasEditsOf(declarationAliasEdits), aliasEditsOf(cardsAliasEdits));
+  assert.strictEqual(
+    (await providers.references.provideReferences(document, positionAt(mainText, cardsAliasUse))).length, 10
+  );
+  await assert.rejects(
+    () => providers.rename.provideRenameEdits(document, positionAt(mainText, cardsAliasUse), 'toolkit'),
+    /already the alias of another import/
+  );
+
+  // An alias of an imported template, renamed where it is used
+  const nestedAliasUse = mainText.indexOf('toolkit.nested.render') + 'toolkit.'.length + 1;
+  const toolkitUri = uri('/virtual/work/lib/toolkit.ftl');
+  assert.deepStrictEqual(
+    aliasEditsOf(await providers.rename.provideRenameEdits(document, positionAt(mainText, nestedAliasUse), 'inner')),
+    {
+      [mainUri.fsPath]: [
+        [positionAt(mainText, nestedAliasUse).line, '<@toolkit.'.length, 'inner'],
+        [positionAt(mainText, mainText.indexOf('toolkit.nested.label')).line, '${toolkit.'.length, 'inner']
+      ],
+      [toolkitUri.fsPath]: [[0, files.get(toolkitUri.fsPath).indexOf('as nested') + 3, 'inner']]
+    }
+  );
+
   // Signature Help provider tests
   assert.deepStrictEqual(providers.signatureHelpTriggerCharacters, ['(', ',']);
 
@@ -1647,8 +1830,41 @@ async function run() {
     ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning],
     ['Missing required parameter "title" for macro "render".', vscode.DiagnosticSeverity.Warning]
   ]);
-  const undeclaredName = '"fromDataModel" is not declared in this template or the ones it includes or imports.';
-  assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), [[undeclaredName, vscode.DiagnosticSeverity.Warning]]);
+  // Wrong aliases are errors: in a macro call, and after a namespace
+  assert.deepStrictEqual(await indexedIssues([
+    '<#import "../lib/cards.ftl" as cards>',
+    '<#import "../lib/toolkit.ftl" as toolkit>',
+    '<#import "../lib/missing.ftl" as missing>',
+    '<#assign hash = {"render": 1}>',
+    '<#macro m ns><@ns.render /></#macro>',
+    '<@cardz.render title="A" />',
+    '<@toolkit.nestd.render />',
+    '${toolkit.nestd.label}',
+    '<@toolkit.nested.render />',
+    '<@toolkit._privateNested.render />',
+    '<@missing.render />',
+    '<@hash.render />',
+    '${user.name}'
+  ].join('\n')), [
+    ['Template "../lib/missing.ftl" was not found in the workspace or the configured template roots.', vscode.DiagnosticSeverity.Warning],
+    ['"cardz" is not the alias of an <#import>.', vscode.DiagnosticSeverity.Error],
+    ['"nestd" is not the alias of an <#import> in namespace "toolkit" (toolkit.ftl).', vscode.DiagnosticSeverity.Error],
+    ['"nestd" is not the alias of an <#import> in namespace "toolkit" (toolkit.ftl).', vscode.DiagnosticSeverity.Error],
+    ['"user" is not declared in this template or the ones it includes or imports. It may come from the data model.', vscode.DiagnosticSeverity.Information]
+  ]);
+  assert.deepStrictEqual(await indexedIssues('[#import "../lib/cards.ftl" as cards]\n[@cardz.render title="A" /]'), [
+    ['"cardz" is not the alias of an [#import].', vscode.DiagnosticSeverity.Error]
+  ]);
+  // An included template sees the aliases of the template that includes it.
+  const partialUri = uri('/virtual/work/pages/partial.ftl');
+  const partialDocument = new Document(partialUri, '<@cards.render title="A" /><@cardz.render />');
+  onDidOpenDocument(partialDocument);
+  assert.deepStrictEqual(await indexedIssues(['<#import "../lib/cards.ftl" as cards>', '<#include "partial.ftl">'].join('\n')), []);
+  onDidOpenDocument(partialDocument);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(diagnosticEntries.get(partialUri.fsPath).map((entry) => entry.message), ['"cardz" is not the alias of an <#import>.']);
+  const undeclaredName = '"fromDataModel" is not declared in this template or the ones it includes or imports. It may come from the data model.';
+  assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), [[undeclaredName, vscode.DiagnosticSeverity.Information]]);
   settings.validateUndeclaredNames = false;
   assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), []);
   delete settings.validateUndeclaredNames;
@@ -1861,7 +2077,202 @@ async function run() {
   assert.deepStrictEqual(updatedSettings[updatedSettings.length - 1], { key: 'updatePathsOnFileMove', value: 'always', target: 1 });
   delete settings.updatePathsOnFileMove;
 
+  await squareBracketMirror(initialFiles);
+
   console.log('Extension integration tests passed.');
+}
+
+// The same template in square bracket syntax: <#if x> becomes [#if x], <#-- c --> becomes [#-- c --].
+// Every offset stays the same.
+function toSquareBracketSyntax(text) {
+  const characters = text.split('');
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.startsWith('<#--', index)) {
+      const end = text.indexOf('-->', index);
+      characters[index] = '[';
+      // A comment that goes on after this text, or that started before it.
+      if (end < 0) continue;
+      characters[end + 2] = ']';
+      index = end + 2;
+    } else if (text.startsWith('-->', index)) {
+      characters[index + 2] = ']';
+      index += 2;
+    } else if (text[index] === '<' && /^\/?[#@]/.test(text.slice(index + 1, index + 3))) {
+      let quote = null;
+      let depth = 0;
+      for (let inner = index + 1; inner < text.length; inner += 1) {
+        const character = text[inner];
+        if (quote) {
+          if (character === '\\') inner += 1;
+          else if (character === quote) quote = null;
+        } else if (character === '"' || character === "'") {
+          quote = character;
+        } else if ('([{'.includes(character)) {
+          depth += 1;
+        } else if (')]}'.includes(character)) {
+          depth -= 1;
+        } else if (character === '>' && depth === 0) {
+          characters[index] = '[';
+          characters[inner] = ']';
+          index = inner;
+          break;
+        }
+      }
+    }
+  }
+  return characters.join('');
+}
+
+// Every feature gives the same answers for templates in square bracket syntax as for the
+// same templates in angle bracket syntax, with the tags in the answers written in square brackets.
+async function squareBracketMirror(initialFiles) {
+  const mirrorFiles = new Map(initialFiles);
+  mirrorFiles.set('/virtual/work/pages/mirror.ftl', [
+    '<#ftl output_format="HTML">',
+    '<#import "../lib/cards.ftl" as cards>',
+    '<#include "shared.ftl">',
+    '<#-- A box with a label. -->',
+    '<#macro box label size=1 extra...>',
+    '  <#local doubled = size * 2>',
+    '  <div class="box">${label}: ${doubled}<#nested></div>',
+    '</#macro>',
+    '<#function twice value><#return value * 2></#function>',
+    '<#assign items = ["a", "b"]>',
+    '<#assign config = {"color": {"name": "red"}}>',
+    '<#if (items?size > 1) && config.color.name == "red">',
+    '  <#list items as item>',
+    '    <@box label=item size=twice(item?index)>${item?upper_case}</@box>',
+    '  <#else>',
+    '    <@cards.render title="none" />',
+    '  </#list>',
+    '<#elseif items?has_content>',
+    '  <@layout>${cards.total(1, 2)}</@layout>',
+    '</#if>',
+    '<#switch items?size><#case 1>one<#break><#default>many</#switch>',
+    '<#attempt>${config.color.name}<#recover>failed</#attempt>',
+    '<p>${twice(3)} ${cards.theme}</p>'
+  ].join('\n'));
+  const canonical = (value) => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      if ('fsPath' in value) return value.fsPath;
+      if (value instanceof Map) return canonical([...value.entries()]);
+      if (typeof value.entries === 'function' && value._edits) return canonical(value.entries());
+      return Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item !== 'function')
+        .map(([key, item]) => [key, canonical(item)]));
+    }
+    return value;
+  };
+  // The angle bracket answers, with their tags written like the square bracket ones, and
+  // their interpolations as [=x] where the templates use that syntax. ${1:x} is a snippet placeholder.
+  const translated = (value, interpolations) => JSON.parse(JSON.stringify(value), (_key, item) => {
+    if (typeof item !== 'string') return item;
+    const tags = toSquareBracketSyntax(item);
+    return interpolations
+      ? tags.replace('${${1:expression}}', '[=${1:expression}]').replace(/\\?\$\{(?!\d+:)([^{}]*?)\\?\}/g, '[=$1]')
+      : tags;
+  });
+
+  const answers = async (syntax) => {
+    files.clear();
+    for (const [fsPath, text] of mirrorFiles) {
+      files.set(fsPath, syntax === 'angle' ? text
+        : syntax === 'square' ? toSquareBracketSyntax(text)
+          : toSquareBracketSyntax(text).replace(/\$\{([^{}"]*)\}/g, '[=$1]'));
+    }
+    if (syntax === 'squareInterpolation') settings.interpolationSyntax = 'squareBracket';
+    extension.activate({ subscriptions: [] });
+    const result = {};
+    for (const [fsPath, text] of files) {
+      const document = new Document(uri(fsPath), text);
+      const attempt = async (call) => {
+        try {
+          return canonical(await call());
+        } catch (error) {
+          return `Error: ${error.message}`;
+        }
+      };
+      result[`${fsPath} symbols`] = await attempt(() => providers.documentSymbols.provideDocumentSymbols(document));
+      result[`${fsPath} tokens`] = await attempt(() => providers.semanticTokens.provideDocumentSemanticTokens(document));
+      result[`${fsPath} folding`] = await attempt(() => providers.folding.provideFoldingRanges(document));
+      result[`${fsPath} links`] = await attempt(() => providers.documentLinks.provideDocumentLinks(document));
+      result[`${fsPath} format`] = await attempt(() => providers.formatting.provideDocumentFormattingEdits(document, { tabSize: 2, insertSpaces: true }));
+      onDidOpenDocument(document);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      result[`${fsPath} diagnostics`] = canonical(diagnosticEntries.get(fsPath) || []);
+      const lines = text.split('\n');
+      const snippets = [];
+      vscode.window.activeTextEditor = {
+        document,
+        options: { tabSize: 2, insertSpaces: true },
+        insertSnippet: async (snippet, range) => { snippets.push([snippet.value, range]); }
+      };
+      inputName = 'extracted';
+      for (let line = 0; line < lines.length; line += 1) {
+        const range = new Range(line, 0, line, lines[line].length);
+        const at = `${fsPath} line ${line}`;
+        result[`${at} codeActions`] = canonical(providers.codeActions.provideCodeActions(document, range)
+          .map((action) => [action.title, action.kind]));
+        const warnings = shownWarnings.length;
+        const edits = appliedEdits.length;
+        await registeredCommands['freemarker.extractMacro'](document, range);
+        for (const directive of ['if', 'list']) await registeredCommands['freemarker.surroundWith'](document, range, directive);
+        inputName = 'div.box>#if';
+        await registeredCommands['freemarker.wrapWithAbbreviation'](document, range);
+        inputName = 'extracted';
+        result[`${at} extract`] = canonical([appliedEdits.slice(edits), shownWarnings.slice(warnings), snippets.splice(0)]);
+      }
+      // The content of each interpolation, extracted to a function and a variable.
+      for (const match of mirrorFiles.get(fsPath).matchAll(/\$\{([^{}]*)\}/g)) {
+        const range = new Range(document.positionAt(match.index + 2), document.positionAt(match.index + 2 + match[1].length));
+        const at = `${fsPath} expression ${match.index}`;
+        result[`${at} codeActions`] = canonical(providers.codeActions.provideCodeActions(document, range).map((action) => action.title));
+        const warnings = shownWarnings.length;
+        const edits = appliedEdits.length;
+        for (const kind of ['Function', 'Assign', 'Local']) await registeredCommands[`freemarker.extract${kind}`](document, range);
+        inputName = '#list>b';
+        await registeredCommands['freemarker.wrapWithAbbreviation'](document, range);
+        inputName = 'extracted';
+        result[`${at} extract`] = canonical([appliedEdits.slice(edits), shownWarnings.slice(warnings), snippets.splice(0)]);
+      }
+      vscode.window.activeTextEditor = undefined;
+      for (let offset = 0; offset <= text.length; offset += 1) {
+        const position = document.positionAt(offset);
+        const at = `${fsPath}:${offset}`;
+        result[`${at} hover`] = await attempt(() => providers.hover.provideHover(document, position));
+        result[`${at} definition`] = await attempt(() => providers.definition.provideDefinition(document, position));
+        result[`${at} references`] = await attempt(() => providers.references.provideReferences(document, position, {}));
+        result[`${at} prepareRename`] = await attempt(() => providers.rename.prepareRename(document, position));
+        result[`${at} rename`] = await attempt(() => providers.rename.provideRenameEdits(document, position, 'renamed'));
+        result[`${at} highlights`] = await attempt(() => providers.highlights.provideDocumentHighlights(document, position));
+        result[`${at} signatureHelp`] = await attempt(() => providers.signatureHelp.provideSignatureHelp(document, position));
+        const prefix = new Document(uri(fsPath), text.slice(0, offset));
+        result[`${at} completion`] = await attempt(() => providers.completion.provideCompletionItems(prefix, prefix.positionAt(offset)));
+      }
+    }
+    result.workspaceSymbols = canonical(await providers.workspaceSymbols.provideWorkspaceSymbols(''));
+    settings.updatePathsOnFileMove = 'always';
+    const move = { files: [{ oldUri: uri('/virtual/work/lib/cards.ftl'), newUri: uri('/virtual/work/lib/ui/cards.ftl') }] };
+    const waits = [];
+    onWillRenameFiles({ ...move, waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    const edits = appliedEdits.length;
+    await onDidRenameFiles(move);
+    result.move = canonical(appliedEdits.slice(edits));
+    delete settings.updatePathsOnFileMove;
+    return result;
+  };
+
+  const angle = await answers('angle');
+  for (const syntax of ['square', 'squareInterpolation']) {
+    const expected = translated(angle, syntax === 'squareInterpolation');
+    const actual = JSON.parse(JSON.stringify(await answers(syntax)));
+    for (const key of Object.keys(expected)) assert.deepStrictEqual(actual[key], expected[key], `${syntax} ${key}`);
+  }
+  delete settings.interpolationSyntax;
+  files.clear();
+  for (const [fsPath, text] of initialFiles) files.set(fsPath, text);
 }
 
 run().catch((error) => {

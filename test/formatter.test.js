@@ -187,4 +187,36 @@ assert.deepStrictEqual(
   ['<#macro block>', '  <#local inhalt>', '    <#nested>', '  </#local>', '  <#assign x = 1>', '</#macro>']
 );
 
+// Text over several lines is indented by one level, also with several tags opened on its first line
+assert.deepStrictEqual(
+  formatLines(['<#if a>', '<p>Text with <b>bold', 'text</b> and more', 'text here.</p>', '</#if>']),
+  ['<#if a>', '  <p>Text with <b>bold', '    text</b> and more', '    text here.</p>', '</#if>']
+);
+assert.deepStrictEqual(formatLines(['<div><div>', 'content', '</div></div>']), ['<div><div>', '  content', '</div></div>']);
+assert.deepStrictEqual(
+  formatLines(['<#if a><#list xs as x>', '${x}', '</#list></#if>']),
+  ['<#if a><#list xs as x>', '  ${x}', '</#list></#if>']
+);
+assert.deepStrictEqual(formatLines(['<tr>', '<td>a', '</td><td>b', '</td>', '</tr>']), ['<tr>', '  <td>a', '  </td><td>b', '  </td>', '</tr>']);
+
+// An interpolation over several lines is continued like a tag
+assert.deepStrictEqual(
+  formatLines(['<#if a>', '${message(', '"key",', 'user.name)}', '${x(', '1', ')}', '${a +', 'b}', '</#if>']),
+  ['<#if a>', '  ${message(', '    "key",', '    user.name)}', '  ${x(', '    1', '  )}', '  ${a +', '    b}', '</#if>']
+);
+assert.deepStrictEqual(
+  formatLines(['<div>', '<p title="${t(', '1)}">x</p>', '</div>']),
+  ['<div>', '  <p title="${t(', '    1)}">x</p>', '</div>']
+);
+
+// The lines of a string keep their spaces, which are part of its value
+assert.deepStrictEqual(
+  formatLines(['<#if a>', '<#assign text = "Line one', '   line two">', '<@m text="a', 'b" />', '</#if>']),
+  ['<#if a>', '  <#assign text = "Line one', '   line two">', '  <@m text="a', 'b" />', '</#if>']
+);
+assert.deepStrictEqual(
+  formatTemplate('[#if a]\n[#assign t = "x\n  y"]\n[/#if]', { tabSize: 2 }).split('\n'),
+  ['[#if a]', '  [#assign t = "x', '  y"]', '[/#if]']
+);
+
 console.log('Formatter tests passed.');
