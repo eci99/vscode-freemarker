@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 - 2026-10-19
+
+Added
+
+- Moving or renaming a template that git tracks moves it in the git index too, like `git mv`, so that git shows a rename. Changes that were not staged stay unstaged. The setting `freemarker.gitMoveFiles` turns it off
+
 ## 0.1.8 - 2026-10-19
 
 Added

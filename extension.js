@@ -17,6 +17,7 @@ const { analyzeExtraction, checkExpression, checkSelection } = require('./extrac
 const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
 const { wrapWithAbbreviation } = require('./wrap');
+const { stageMovedTemplates } = require('./git-move');
 
 const templatePattern = '**/*.{ftl,ftlh,ftlx}';
 // For text that has already been rewritten to the default syntax.
@@ -2666,6 +2667,13 @@ function activate(context) {
       }));
     }),
     vscode.workspace.onDidRenameFiles(async (event) => {
+      // Templates that git tracks are moved in the index too, so that git shows a rename.
+      if (vscode.workspace.getConfiguration('freemarker').get('gitMoveFiles', true)) {
+        await stageMovedTemplates(event.files
+          .filter(({ oldUri, newUri }) => oldUri.scheme === 'file' && newUri.scheme === 'file')
+          .map(({ oldUri, newUri }) => ({ oldPath: oldUri.fsPath, newPath: newUri.fsPath })))
+          .catch(() => undefined);
+      }
       const key = renameKey(event.files);
       const edits = pendingMoveEdits.get(key);
       pendingMoveEdits.delete(key);

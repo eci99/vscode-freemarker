@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -29,7 +29,7 @@
     "intellisense"
   ],
   "scripts": {
-    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/comments.test.js && node ./test/wrap.test.js && node ./test/semantic-tokens.test.js && node ./test/extension.test.js"
+    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/comments.test.js && node ./test/wrap.test.js && node ./test/git-move.test.js && node ./test/semantic-tokens.test.js && node ./test/extension.test.js"
   },
   "contributes": {
     "configuration": {
@@ -102,6 +102,11 @@
           ],
           "default": "prompt",
           "description": "Update the import and include paths that lead to or from a template when the template or its folder is moved or renamed in VS Code."
+        },
+        "freemarker.gitMoveFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a template that git tracks is moved or renamed in VS Code, move it in the git index too, like git mv, so that git shows a rename. Changes that were not staged stay unstaged."
         },
         "freemarker.privatePrefix": {
           "type": "string",

@@ -89,7 +89,7 @@ Templates in diff and merge editors, and files with unresolved merge conflicts, 
 - **Surround with `<#list>` / `<#if>`** (light bulb): wraps the selected lines in a directive; the missing parts of its start tag are placeholders.
 - **Toggle Line Comment** (`Ctrl+/`) puts every selected line into a FreeMarker comment of its own, `<#-- ... -->` or `[#-- ... --]` depending on the tag syntax of the template, and removes the comments again. The comment starts at the beginning of the line and the indentation stays inside it.
 - **Toggle Block Comment** (`Ctrl+Shift+A`, `Shift+Alt+A` on macOS) puts the selection into `<#-- ... -->` or `[#-- ... --]`, depending on the tag syntax, or takes away the comment the selection is in.
-- **Moving templates**: when a template or a folder of templates is moved or renamed in VS Code, the `<#import>` and `<#include>` paths that lead to it and from it are updated. A path keeps its form: relative to the template, relative to the workspace folder or a template root, with a leading `/`, or without an extension. By default VS Code asks first; `freemarker.updatePathsOnFileMove` changes that.
+- **Moving templates**: when a template or a folder of templates is moved or renamed in VS Code, the `<#import>` and `<#include>` paths that lead to it and from it are updated. A path keeps its form: relative to the template, relative to the workspace folder or a template root, with a leading `/`, or without an extension. By default VS Code asks first; `freemarker.updatePathsOnFileMove` changes that. Templates that git tracks are moved in the git index too, like `git mv`, so that git shows a rename and keeps their history; changes that were not staged stay unstaged. Other files in a moved folder are left to you. `freemarker.gitMoveFiles` turns this off.
 - **Rename HTML tags**: **Rename Symbol** (`F2`) on the name of an HTML start tag renames its end tag as well.
 - **Matching tags**: with the cursor on a tag, the start tag, the end tag, and branch tags such as `<#else>` of the same block are highlighted.
 - **Syntax highlighting** for directives, interpolations, comments, expressions, built-ins, and special variables, on top of HTML.
@@ -130,6 +130,7 @@ The two are independent: `[#if x]${y}[/#if]` and `<#if x>[=y]</#if>` are both po
 | `freemarker.validateHtmlTags` | `true` | Warn about HTML tags that are never closed and about closing HTML tags without a start tag. Turn this off if the templates produce something other than HTML. |
 | `freemarker.validateUndeclaredNames` | `true` | Report names that are declared neither in the template nor in the templates it includes or imports, as information. Turn this off if the templates use many names from the data model. |
 | `freemarker.updatePathsOnFileMove` | `prompt` | `prompt`, `always`, or `never`: whether the `import`/`include` paths are updated when a template or its folder is moved or renamed. |
+| `freemarker.gitMoveFiles` | `true` | Move templates that git tracks in the git index too when they are moved or renamed in VS Code, like `git mv`. |
 | `freemarker.privatePrefix` | `_` | Prefix that marks macros, functions, variables, and namespace aliases as private to their template. |
 
 ## Limitations
