@@ -423,4 +423,4 @@ function validateTemplate(text, options = {}) {
   return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks), ...validateHashes(source, blocks)];
 }
 
-module.exports = { htmlTags, templateBlocks, validateTemplate };
+module.exports = { findHtmlTagEnd, htmlTags, templateBlocks, validateTemplate };

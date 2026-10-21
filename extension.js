@@ -11,6 +11,7 @@ const {
   findSpecialVariable,
   specialVariableNameStart
 } = require('./directives');
+const { enclosingRanges, selectionRanges } = require('./selection-ranges');
 const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
 const { displayText, isRawStringStart, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { analyzeExtraction, checkExpression, checkSelection } = require('./extract-macro');
@@ -170,6 +171,33 @@ function closingTagAfterTypedSlash(document, change, record) {
   const cursorOffset = change.rangeOffset + change.text.length;
   if (record.source.slice(cursorOffset).startsWith(closingText)) return undefined;
   return closingText;
+}
+
+// The end tag that belonged to a start tag that a typed slash just made self-closing, as in
+// <@render|></@render>, as offset and length; undefined if there is none.
+function endTagAfterSelfClosingSlash(document, change, record) {
+  if (change.rangeLength !== 0 || !['/', '>', ']'].includes(change.text)) return undefined;
+  const source = record.source;
+  // The offset of the slash before the end of the tag.
+  const slash = change.text === '/' ? change.rangeOffset : change.rangeOffset - 1;
+  if (source[slash] !== '/' || source[slash + 1] !== '>') return undefined;
+  const tagStart = source.lastIndexOf('<', slash - 1);
+  if (tagStart < 0 || isInStringLiteral(source, tagStart)) return undefined;
+
+  // The pairs of start and end tags as they were before the tag was made self-closing.
+  const before = `${source.slice(0, slash)}${source.slice(slash + 1)}`;
+  let end;
+  if (/^<[#@]/.test(source.slice(tagStart, tagStart + 2))) {
+    const block = templateBlocks(before, defaultSyntax).blocks.find((candidate) => candidate.open.offset === tagStart);
+    if (block) end = { offset: block.close.offset + 1, length: block.close.length };
+  } else {
+    const pair = htmlTags(before).pairs.find((candidate) => candidate.open === tagStart + 1);
+    if (pair) end = { offset: pair.close - 1, length: before.indexOf('>', pair.close) + 3 - pair.close };
+  }
+  // A tag typed with its slash, as in <span/>, may come before the end tag of another
+  // element; only the end tag right after it belongs to it.
+  if (end && change.text !== '/' && end.offset !== slash + 2) return undefined;
+  return end;
 }
 
 // The line and character of an offset in text, for files that are not open.
@@ -2565,6 +2593,25 @@ function activate(context) {
     vscode.languages.registerFoldingRangeProvider({ language: 'freemarker' }, {
       provideFoldingRanges: (document) => index.foldingRanges(document)
     }),
+    vscode.languages.registerSelectionRangeProvider({ language: 'freemarker' }, {
+      provideSelectionRanges: (document, positions) => {
+        const text = document.getText();
+        const ranges = selectionRanges(text, syntaxOptions()).filter(([start, end]) => start > 0 || end < text.length);
+        return positions.map((position) => {
+          const offset = document.offsetAt(position);
+          let selectionRange = new vscode.SelectionRange(
+            new vscode.Range(document.positionAt(0), document.positionAt(text.length))
+          );
+          for (const [start, end] of enclosingRanges(ranges, offset, offset).reverse()) {
+            selectionRange = new vscode.SelectionRange(
+              new vscode.Range(document.positionAt(start), document.positionAt(end)),
+              selectionRange
+            );
+          }
+          return selectionRange;
+        });
+      }
+    }),
     vscode.languages.registerDocumentHighlightProvider({ language: 'freemarker' }, {
       provideDocumentHighlights: (document, position) => index.documentHighlights(document, position)
     }),
@@ -2589,6 +2636,14 @@ function activate(context) {
           change.rangeOffset + change.text.length
         );
         const record = index.currentRecord(event.document);
+        const endTag = endTagAfterSelfClosingSlash(event.document, change, record);
+        if (endTag) {
+          const range = new vscode.Range(
+            event.document.positionAt(endTag.offset),
+            event.document.positionAt(endTag.offset + endTag.length)
+          );
+          return editor.edit((editBuilder) => editBuilder.delete(range));
+        }
         const closingEndTag = closingTagAfterTypedSlash(event.document, change, record);
         if (closingEndTag) {
           const finalCursor = new vscode.Position(cursor.line, cursor.character + closingEndTag.length);

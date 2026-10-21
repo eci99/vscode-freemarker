@@ -214,6 +214,12 @@ const vscode = {
       this.kind = kind;
     }
   },
+  SelectionRange: class {
+    constructor(range, parent) {
+      this.range = range;
+      this.parent = parent;
+    }
+  },
   FoldingRange: class {
     constructor(start, end, kind) {
       this.start = start;
@@ -429,6 +435,10 @@ const vscode = {
       providers.workspaceSymbols = provider;
       return disposable;
     },
+    registerSelectionRangeProvider: (_selector, provider) => {
+      providers.selection = provider;
+      return disposable;
+    },
     registerFoldingRangeProvider: (_selector, provider) => {
       providers.folding = provider;
       return disposable;
@@ -477,10 +487,14 @@ async function run() {
       document,
       edit: async (callback) => {
         let insertion;
-        callback({ insert: (position, value) => { insertion = { position, value }; } });
+        callback({
+          insert: (position, value) => { insertion = { start: position, end: position, value }; },
+          delete: (range) => { insertion = { start: range.start, end: range.end, value: '' }; }
+        });
         if (!insertion) return false;
-        const offset = document.offsetAt(insertion.position);
-        document.text = `${document.text.slice(0, offset)}${insertion.value}${document.text.slice(offset)}`;
+        const start = document.offsetAt(insertion.start);
+        const end = document.offsetAt(insertion.end);
+        document.text = `${document.text.slice(0, start)}${insertion.value}${document.text.slice(end)}`;
         return true;
       }
     };
@@ -532,7 +546,19 @@ async function run() {
     await applyTypedCharacter('<#if ready><#list items as item>text</', '/', undefined, '<#if ready><#list items as item>text</#list>'.length),
     '<#if ready><#list items as item>text</#list>'
   );
+  // A slash that makes a start tag self-closing removes its end tag.
+  const typeSlash = (text) => applyTypedCharacter(text.replace('|', '/'), '/', text.indexOf('|'));
+  assert.strictEqual(await typeSlash('<@render|></@render>'), '<@render/>');
+  assert.strictEqual(await typeSlash('<div><@cards.render title="a" |>text</@cards.render></div>'), '<div><@cards.render title="a" />text</div>');
+  assert.strictEqual(await typeSlash('<@outer><@inner|><@inner></@inner></@inner></@outer>'), '<@outer><@inner/><@inner></@inner></@outer>');
+  assert.strictEqual(await typeSlash('<div class="a"|>\n  text\n</div >'), '<div class="a"/>\n  text\n');
+  assert.strictEqual(await typeSlash('<section><div|></div></section>'), '<section><div/></section>');
+  assert.strictEqual(await typeSlash('<@render x="a|"></@render>'), '<@render x="a/"></@render>');
+  assert.strictEqual(await typeSlash('<@render|>'), '<@render/>');
+  assert.strictEqual(await applyTypedCharacter('<@render/></@render>', '>', '<@render/'.length), '<@render/>');
+  assert.strictEqual(await applyTypedCharacter('<span>a <span/> b</span>', '>', '<span>a <span/'.length), '<span>a <span/> b</span>');
   settings.tagSyntax = 'squareBracket';
+  assert.strictEqual(await typeSlash('[#if ready]text[@render|][/@render][/#if]'), '[#if ready]text[@render/][/#if]');
   assert.strictEqual(await applyTypedCharacter('[#function total]', ']'), '[#function total][/#function]');
   assert.strictEqual(await applyTypedCharacter('[#if items[0]]', ']'), '[#if items[0]][/#if]');
   assert.strictEqual(
@@ -1900,6 +1926,23 @@ async function run() {
   const allSymbols = await providers.workspaceSymbols.provideWorkspaceSymbols('');
   assert(allSymbols.some((symbol) => symbol.name === 'theme' && symbol.kind === vscode.SymbolKind.Variable));
   assert(!allSymbols.some((symbol) => symbol.name === 'macroOnly' || symbol.name === 'product'));
+
+  const selectionDocument = new Document(builtinUri, '<#if ready>\n<p>${name}</p>\n</#if>');
+  const [selectionRange] = providers.selection.provideSelectionRanges(selectionDocument, [new Position(1, 6)]);
+  const selectedTexts = [];
+  for (let range = selectionRange; range; range = range.parent) {
+    selectedTexts.push(selectionDocument.getText().slice(
+      selectionDocument.offsetAt(range.range.start),
+      selectionDocument.offsetAt(range.range.end)
+    ));
+  }
+  assert.deepStrictEqual(selectedTexts, [
+    'name',
+    '${name}',
+    '<p>${name}</p>',
+    '\n<p>${name}</p>\n',
+    '<#if ready>\n<p>${name}</p>\n</#if>'
+  ]);
 
   const foldingDocument = new Document(builtinUri, [
     '<#-- Lists the',

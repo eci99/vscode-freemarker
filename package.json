@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -29,7 +29,7 @@
     "intellisense"
   ],
   "scripts": {
-    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/comments.test.js && node ./test/wrap.test.js && node ./test/git-move.test.js && node ./test/semantic-tokens.test.js && node ./test/extension.test.js"
+    "test": "node ./test/syntax.test.js && node ./test/builtins.test.js && node ./test/directives.test.js && node ./test/template-index.test.js && node ./test/validator.test.js && node ./test/formatter.test.js && node ./test/comments.test.js && node ./test/wrap.test.js && node ./test/git-move.test.js && node ./test/semantic-tokens.test.js && node ./test/selection-ranges.test.js && node ./test/extension.test.js"
   },
   "contributes": {
     "configuration": {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11 - 2026-10-21
+
+Added
+
+- Expand Selection (`Shift+Alt+Right`, shrink with `Shift+Alt+Left`) follows the structure of the template: names with their members and built-ins, strings, brackets, parameters, tags, interpolations, HTML attributes, the content of elements and blocks, branches such as `<#else>`, whole elements and blocks, and comments
+- Typing `/` before the `>` of a start tag, as in `<@render/>`, removes its end tag; the content between the two tags stays
+
 ## 0.1.10 - 2026-10-21
 
 Fixed
