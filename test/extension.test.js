@@ -178,6 +178,7 @@ let inputName;
 let onDidOpenDocument;
 let onDidChangeDocument;
 let onWillRenameFiles;
+const saveAllCalls = [];
 let onDidRenameFiles;
 let informationAnswer;
 const shownInformation = [];
@@ -350,6 +351,10 @@ const vscode = {
     }),
     onDidChangeConfiguration: () => disposable,
     applyEdit: async (edit) => appliedEdits.push(edit),
+    saveAll: async (includeUntitled) => {
+      saveAllCalls.push(includeUntitled);
+      return true;
+    },
     openTextDocument: async (targetUri) => new Document(targetUri, files.get(targetUri.fsPath)),
     onDidChangeTextDocument: (listener) => {
       onDidChangeDocument = listener;
@@ -2033,7 +2038,11 @@ async function run() {
   };
 
   settings.updatePathsOnFileMove = 'always';
+  // Files are saved before templates are moved, but not before other files are.
+  await moveFiles([['/virtual/work/notes.txt', '/virtual/work/docs/notes.txt']]);
+  assert.deepStrictEqual(saveAllCalls, []);
   const movedFile = await moveFiles([['/virtual/work/lib/cards.ftl', '/virtual/work/lib/ui/cards.ftl']]);
+  assert.deepStrictEqual(saveAllCalls, [false]);
   assert.deepStrictEqual(movedFile['/virtual/work/pages/main.ftl'], [[0, 10, '../lib/ui/cards.ftl'], [2, 10, '../lib/ui/cards.ftl']]);
   assert.deepStrictEqual(movedFile['/virtual/work/pages/caller.ftl'], [[0, 10, '../lib/ui/cards.ftl']]);
   // The moved template itself, under its new name, including an import inside a macro.

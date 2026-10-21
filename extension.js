@@ -313,9 +313,8 @@ class TemplateWorkspaceIndex {
     return undefined;
   }
 
-  // The import and include paths that have to change so that they still lead to the same
-  // templates after the given files or folders are moved. Each edit names the file at its new location.
-  movedTemplateEdits(renames) {
+  // The templates that the given moves of files or folders take along: old key -> new path.
+  movedTemplates(renames) {
     const moved = new Map();
     for (const { oldUri, newUri } of renames) {
       if (oldUri.scheme !== 'file' || newUri.scheme !== 'file') continue;
@@ -328,6 +327,13 @@ class TemplateWorkspaceIndex {
         else if (!relative.startsWith('..') && !path.isAbsolute(relative)) moved.set(key, path.join(newPath, relative));
       }
     }
+    return moved;
+  }
+
+  // The import and include paths that have to change so that they still lead to the same
+  // templates after the given files or folders are moved. Each edit names the file at its new location.
+  movedTemplateEdits(renames) {
+    const moved = this.movedTemplates(renames);
     if (!moved.size) return [];
     const newLocation = (key) => moved.get(key) || key;
 
@@ -2662,7 +2668,10 @@ function activate(context) {
     // and changed after it, in the files at their new locations.
     vscode.workspace.onWillRenameFiles((event) => {
       if (updatePathsSetting() === 'never') return;
-      event.waitUntil(index.ready.then(() => {
+      event.waitUntil(index.ready.then(async () => {
+        // Unsaved changes are saved first: the paths are worked out from the text in the editors,
+        // and that text has to be the one in the files that are moved and then changed.
+        if (index.movedTemplates(event.files).size) await vscode.workspace.saveAll(false);
         pendingMoveEdits.set(renameKey(event.files), index.movedTemplateEdits(event.files));
       }));
     }),

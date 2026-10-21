@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 - 2026-10-21
+
+Fixed
+
+- Moving or renaming templates saves all files with unsaved changes first, so that updating the import and include paths does not go wrong because of unsaved changes
+
 ## 0.1.9 - 2026-10-19
 
 Added
