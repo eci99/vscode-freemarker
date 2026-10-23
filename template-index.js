@@ -66,6 +66,35 @@ function findTagEnd(text, start) {
   return -1;
 }
 
+// The further name = value pairs of an <#assign> tag, from `start` to the end of the tag.
+function laterAssignments(source, start, end) {
+  const found = [];
+  let quote = null;
+  let depth = 0;
+  for (let index = start; index < end; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if ('([{'.includes(character)) {
+      depth += 1;
+    } else if (')]}'.includes(character)) {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && /\s/.test(source[index - 1] || '') && /[A-Za-z_]/.test(character)) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)\s*[-+*\/%]?=(?!=)/.exec(source.slice(index, end));
+      if (assignment) {
+        found.push({ name: assignment[1], nameOffset: index, equalsOffset: index + assignment[0].length - 1 });
+        index += assignment[0].length - 1;
+      } else {
+        index += /^[A-Za-z0-9_]*/.exec(source.slice(index, end))[0].length - 1;
+      }
+    }
+  }
+  return found;
+}
+
 function matchingBrace(text, start) {
   let depth = 0;
   let quote = null;
@@ -256,7 +285,7 @@ function parseTemplate(text, options) {
   }
 
   const variablePatterns = [
-    /<#(?:assign|local|global)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|>)/g,
+    /<#(?:assign|local|global)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[-+*\/%]?=|\+\+|--|>)/g,
     /<#list\b[^>]*?\bas\s+([A-Za-z_][A-Za-z0-9_]*)\b/g,
     /<#items\b[^>]*?\bas\s+([A-Za-z_][A-Za-z0-9_]*)\b/g
   ];
@@ -267,41 +296,51 @@ function parseTemplate(text, options) {
       const tagText = tagEnd < 0 ? source.slice(match.index) : source.slice(match.index, tagEnd + 1);
       const captureAssign = tagText.startsWith('<#assign') && !tagText.includes('=');
       let declarationEnd = tagEnd;
-      let value;
+      let captureValue;
       if (captureAssign) {
         const closingTag = /<\/\#assign\s*>/g;
         closingTag.lastIndex = tagEnd + 1;
         const closingMatch = closingTag.exec(source);
         if (closingMatch) {
           declarationEnd = closingMatch.index + closingMatch[0].length - 1;
-          value = display.slice(tagEnd + 1, closingMatch.index).trim();
+          captureValue = display.slice(tagEnd + 1, closingMatch.index).trim();
         }
       }
-      const equalsOffset = source.indexOf('=', nameOffset + match[1].length);
-      const hasAssignmentValue = equalsOffset >= 0 && equalsOffset < tagEnd;
-      if (!captureAssign && hasAssignmentValue) {
-        value = display.slice(equalsOffset + 1, tagEnd).replace(/\/\s*$/, '').trim();
+      const declaration = declarationEnd < 0
+        ? display.slice(match.index).trim()
+        : display.slice(match.index, declarationEnd + 1).trim();
+      // <#assign a = 1 b = 2> declares both.
+      const entries = [{ name: match[1], nameOffset, equalsOffset: source.indexOf('=', nameOffset + match[1].length) }];
+      if (pattern === variablePatterns[0] && !captureAssign && tagEnd >= 0 && entries[0].equalsOffset >= 0 && entries[0].equalsOffset < tagEnd) {
+        entries.push(...laterAssignments(source, entries[0].equalsOffset + 1, tagEnd));
       }
-      symbols.push({
-        name: match[1],
-        kind: 'variable',
-        offset: nameOffset,
-        length: match[1].length,
-        value,
-        documentation: leadingCommentParagraph(text, match.index)
-          || trailingCommentParagraph(text, declarationEnd + 1),
-        declaration: declarationEnd < 0
-          ? display.slice(match.index).trim()
-          : display.slice(match.index, declarationEnd + 1).trim()
+      // config += {...} changes a variable that is declared elsewhere; it only declares one that is not.
+      const changesOnly = /^\s*(?:[-+*\/%]=|\+\+|--)/.test(source.slice(nameOffset + match[1].length));
+      entries.forEach((entry, index) => {
+        if (index === 0 && changesOnly && symbols.some((symbol) => symbol.kind === 'variable' && symbol.name === entry.name)) return;
+        const hasAssignmentValue = entry.equalsOffset >= 0 && entry.equalsOffset < tagEnd;
+        const valueEnd = index + 1 < entries.length ? entries[index + 1].nameOffset : tagEnd;
+        let value;
+        if (captureAssign) value = captureValue;
+        else if (hasAssignmentValue) value = display.slice(entry.equalsOffset + 1, valueEnd).replace(/\/\s*$/, '').trim();
+        symbols.push({
+          name: entry.name,
+          kind: 'variable',
+          offset: entry.nameOffset,
+          length: entry.name.length,
+          value,
+          documentation: leadingCommentParagraph(text, match.index)
+            || trailingCommentParagraph(text, declarationEnd + 1),
+          declaration
+        });
+        if (hasAssignmentValue) {
+          let hashStart = entry.equalsOffset + 1;
+          while (/\s/.test(source[hashStart] || '')) hashStart += 1;
+          if (source[hashStart] === '{') {
+            parseHashMembers(display, hashStart, entry.name, display.slice(match.index, tagEnd + 1).trim(), symbols);
+          }
+        }
       });
-      if (hasAssignmentValue) {
-        const declaration = display.slice(match.index, tagEnd + 1).trim();
-        let hashStart = equalsOffset + 1;
-        while (/\s/.test(source[hashStart] || '')) hashStart += 1;
-        if (source[hashStart] === '{') {
-          parseHashMembers(display, hashStart, match[1], declaration, symbols);
-        }
-      }
     }
   }
 

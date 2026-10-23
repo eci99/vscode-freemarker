@@ -43,7 +43,9 @@ const autoCloseDirectives = new Set([
 
 // Whether the offset is inside a string literal of a tag or interpolation, as in <#assign x = "|".
 // The text is in the default syntax. An interpolation in a string is an expression again.
-function isInStringLiteral(source, offset) {
+// The offset of the quote that opens the string literal of a tag or interpolation that
+// `offset` is in, or -1.
+function stringLiteralStart(source, offset) {
   const stack = [];
   for (let index = 0; index < offset; index += 1) {
     const character = source[index];
@@ -70,6 +72,7 @@ function isInStringLiteral(source, offset) {
       }
     } else if (character === '"' || character === "'") {
       top.quote = character;
+      top.quoteStart = index;
       top.raw = isRawStringStart(source, index);
     } else if (character === '(') {
       top.parentheses += 1;
@@ -85,7 +88,11 @@ function isInStringLiteral(source, offset) {
     }
   }
   const innermost = stack[stack.length - 1];
-  return Boolean(innermost && innermost.quote);
+  return innermost && innermost.quote ? innermost.quoteStart : -1;
+}
+
+function isInStringLiteral(source, offset) {
+  return stringLiteralStart(source, offset) >= 0;
 }
 
 function closingTextAfterTypedTag(document, change, record) {
@@ -101,14 +108,15 @@ function closingTextAfterTypedTag(document, change, record) {
   if (change.text === '>' && squareStart > angleStart) return undefined;
   const tagStart = change.text === ']' ? squareStart : angleStart;
   if (tagStart < 0) return undefined;
-  if (record && isInStringLiteral(record.source, tagStart)) return undefined;
+  const inString = Boolean(record && isInStringLiteral(record.source, tagStart));
 
   const opener = change.text === ']' ? '[' : '<';
   const ending = opener === '<' ? '>' : ']';
   if (change.text !== ending) return undefined;
   const tagText = source.slice(tagStart, cursorOffset);
   if (!tagText.endsWith(ending)) return undefined;
-  const header = tagText.slice(1, -1);
+  // The quotes around the attributes of HTML in a string are escaped.
+  const header = inString ? tagText.slice(1, -1).replace(/\\./g, '  ') : tagText.slice(1, -1);
   let quote = null;
   for (let index = 0; index < header.length; index += 1) {
     const character = header[index];
@@ -127,6 +135,7 @@ function closingTextAfterTypedTag(document, change, record) {
   const special = /^([#@])([A-Za-z_][A-Za-z0-9_.-]*)\b/.exec(header);
   let closeTag;
   if (special) {
+    if (inString) return undefined;
     if (special[1] === '#' && !autoCloseDirectives.has(special[2])) return undefined;
     closeTag = `${opener}/${special[1]}${special[2]}${ending}`;
     if (special[1] === '#' && ending === '>' && /\s>$/.test(header)) return undefined;
@@ -147,11 +156,13 @@ function closingTagAfterTypedSlash(document, change, record) {
   const opener = source[change.rangeOffset - 1];
   const squareSyntax = record.tagSyntax === 'square';
   if (opener !== '<' && !(opener === '[' && squareSyntax)) return undefined;
-  if (isInStringLiteral(record.source, change.rangeOffset - 1)) return undefined;
+  // In a string only the HTML of that string is closed.
+  const stringStart = stringLiteralStart(record.source, change.rangeOffset - 1);
+  if (stringStart >= 0 && opener === '[') return undefined;
 
-  const sourceBeforeTag = record.source.slice(0, change.rangeOffset - 1);
+  const sourceBeforeTag = record.source.slice(stringStart >= 0 ? stringStart + 1 : 0, change.rangeOffset - 1);
   const candidates = htmlTags(sourceBeforeTag).unclosed.map((tag) => ({ ...tag, kind: 'html' }));
-  if (opener === '[' || !squareSyntax) {
+  if (stringStart < 0 && (opener === '[' || !squareSyntax)) {
     candidates.push(...templateBlocks(sourceBeforeTag, defaultSyntax).unclosed
       .filter((block) => !block.optional)
       .map((block) => ({ ...block, kind: block.kind })));
@@ -228,12 +239,31 @@ class TemplateWorkspaceIndex {
   update(uri, text) {
     this.records.set(this.key(uri), {
       uri,
-      ...parseTemplate(text, syntaxOptions())
+      // The editor does not count the byte order mark of a file that was read from the disk.
+      ...parseTemplate(text.replace(/^\uFEFF/, ''), syntaxOptions())
     });
   }
 
   remove(uri) {
     this.records.delete(this.key(uri));
+  }
+
+  // Reads the templates again and forgets those that are gone. Moving or deleting a folder does
+  // not tell the watcher about every template in it.
+  async resync() {
+    const uris = await vscode.workspace.findFiles(templatePattern, '**/{node_modules,.git}/**');
+    const found = new Set(uris.map((uri) => this.key(uri)));
+    for (const [key, record] of this.records) {
+      if (record.uri.scheme === 'file' && !found.has(key)) this.records.delete(key);
+    }
+    await Promise.all(uris.map(async (uri) => {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        this.update(uri, Buffer.from(bytes).toString('utf8'));
+      } catch {
+        this.remove(uri);
+      }
+    }));
   }
 
   initialize() {
@@ -582,7 +612,10 @@ class TemplateWorkspaceIndex {
   // What is visible where the cursor is: loop variables only inside their loop, and
   // the parameters and local variables of a macro or function only inside it.
   scopeDeclarations(record, offset, declarations) {
-    const enclosing = templateBlocks(record.source, { tagSyntax: 'angleBracket' }).blocks.filter((block) =>
+    const parsed = templateBlocks(record.source, { tagSyntax: 'angleBracket' });
+    // A block that is not closed yet reaches to the end of the template.
+    const unclosed = parsed.unclosed.map((open) => ({ name: open.name, kind: open.kind, open, close: { offset: Infinity } }));
+    const enclosing = [...parsed.blocks, ...unclosed].filter((block) =>
       block.kind === 'directive' && offset > block.open.offset + block.open.length && offset <= block.close.offset);
     const inOpenTag = (block, symbol) =>
       symbol.offset > block.open.offset && symbol.offset < block.open.offset + block.open.length;
@@ -615,7 +648,7 @@ class TemplateWorkspaceIndex {
     const locals = record.symbols
       .filter((symbol) => symbol.topLevel === false && symbol.kind === 'variable'
         && symbol.offset > callable.open.offset && symbol.offset < offset
-        && !loopPattern.test(symbol.declaration || ''))
+        && (!loopPattern.test(symbol.declaration || '') || enclosing.some((block) => inOpenTag(block, symbol))))
       .map((symbol) => ({ symbol, record }));
     return [...scoped, ...parameters, ...locals];
   }
@@ -956,7 +989,8 @@ class TemplateWorkspaceIndex {
       });
   }
 
-  // The cursor is after the = of a named argument, as in <@macro name=|.
+  // The cursor is in the value of a named argument, as in <@macro name=| or
+  // <@macro name=a + |, but not after a finished value, where the next argument starts.
   isMacroArgumentValue(source, offset) {
     const before = source.slice(0, offset);
     const tagStart = before.lastIndexOf('<@');
@@ -964,6 +998,8 @@ class TemplateWorkspaceIndex {
     const body = before.slice(tagStart + 2);
     if (!/^[A-Za-z_][A-Za-z0-9_.]*\s/.test(body)) return false;
     let quote = null;
+    let depth = 0;
+    let valueStart = -1;
     for (let index = 0; index < body.length; index += 1) {
       const character = body[index];
       if (quote) {
@@ -971,14 +1007,23 @@ class TemplateWorkspaceIndex {
         else if (character === quote) quote = null;
       } else if (character === '"' || character === "'") {
         quote = character;
-      } else if (character === '>') {
+      } else if ('([{'.includes(character)) {
+        depth += 1;
+      } else if (')]}'.includes(character)) {
+        depth = Math.max(0, depth - 1);
+      } else if (character === '>' && depth === 0) {
         return false;
+      } else if (character === '=' && depth === 0 && body[index + 1] !== '=' && !/[=!<>]/.test(body[index - 1])
+        && /\s[A-Za-z_][A-Za-z0-9_]*\s*$/.test(body.slice(0, index))) {
+        valueStart = index + 1;
       }
     }
-    if (quote) return false;
-    return /\s[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:[A-Za-z_][A-Za-z0-9_.]*)?$/.test(body)
-      // Inside the parentheses of a call in a value: <@macro name=function(|
-      || (/\s[A-Za-z_][A-Za-z0-9_]*\s*=/.test(body) && this.openCall(source.slice(0, offset)) !== undefined);
+    if (quote || valueStart < 0) return false;
+    if (depth > 0) return true;
+    const value = body.slice(valueStart);
+    return value.trim() === ''
+      || /[A-Za-z0-9_.$]$/.test(value)
+      || /(?:[-+*\/%!<>=&|?:,]|\b(?:and|or|not|gt|gte|lt|lte|in|is|as))\s*$/.test(value);
   }
 
   namedArguments(text, entries = []) {
@@ -1553,6 +1598,20 @@ class TemplateWorkspaceIndex {
     return quote === null;
   }
 
+  // The cursor is in an expression of a directive, as in <#if | or <#assign name = |.
+  isDirectiveExpression(source, offset) {
+    const before = source.slice(0, offset);
+    const tagStart = before.lastIndexOf('<#');
+    if (tagStart < 0) return false;
+    const tag = /^<#(if|elseif|list|foreach|assign|local|global|return|switch|case|on)\s([^]*)$/.exec(before.slice(tagStart));
+    if (!tag || !this.isFreeMarkerExpression(source, offset, offset)) return false;
+    const tagEnd = findTagEnd(source, tagStart + 2);
+    if (tagEnd >= 0 && tagEnd < offset) return false;
+    if (/^(?:assign|local|global)$/.test(tag[1]) && !/=/.test(tag[2])) return false;
+    // The name of the loop variable is declared, not read.
+    return !/\bas\s+[A-Za-z0-9_, ]*$/.test(tag[2]);
+  }
+
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
     const openings = ['${', '#{', '<#', '<@', '</@'];
     let openingOffset = -1;
@@ -1837,7 +1896,12 @@ class TemplateWorkspaceIndex {
       if (offset < match.index || offset > match.index + match[0].length) continue;
       const before = record.source.slice(Math.max(0, match.index - 2), match.index);
       const after = record.source.slice(match.index + match[0].length);
-      const declaration = included.find(({ symbol }) => symbol.name === match[0]);
+      let declaration = included.find(({ symbol }) => symbol.name === match[0]);
+      // In farbe.rot the cursor on farbe selects the variable.
+      const firstSegment = match[0].split('.')[0];
+      if (match[0].includes('.') && offset <= match.index + firstSegment.length) {
+        declaration = included.find(({ symbol }) => symbol.kind === 'variable' && symbol.name === firstSegment) || declaration;
+      }
       if (!declaration) continue;
       if (declaration.symbol.kind === 'variable'
         && this.isFreeMarkerExpression(record.source, match.index, offset)) {
@@ -1925,6 +1989,15 @@ class TemplateWorkspaceIndex {
       if (selectedIndex === 0) {
         namespaceName = segments[0];
         namespaceRecord = this.resolveNamespaceRecord(record, [namespaceName]);
+        if (!namespaceRecord) {
+          const variable = this.includedSymbols(record).find(({ symbol: item }) =>
+            item.kind === 'variable' && item.name === namespaceName
+          );
+          if (variable) {
+            symbolRecord = variable.record;
+            symbol = variable.symbol;
+          }
+        }
       } else {
         const parent = this.resolveNamespaceRecord(record, segments.slice(0, selectedIndex));
         const candidateNamespace = parent && this.importedRecord(parent, segments[selectedIndex]);
@@ -2320,9 +2393,24 @@ class TemplateWorkspaceIndex {
     });
   }
 
+  // The record of a document in which the tag that is being typed is finished, so that the
+  // blocks around it, and the variables declared in them, are still known.
+  completionRecord(document, offset) {
+    const record = this.currentRecord(document);
+    const before = record.source.slice(0, offset);
+    const tagStart = Math.max(before.lastIndexOf('<#'), before.lastIndexOf('<@'));
+    if (tagStart < 0 || before.startsWith('<#--', tagStart)) return record;
+    const tagEnd = findTagEnd(record.source, tagStart + 1);
+    // Only a tag that runs on into the next tags needs to be finished.
+    if (tagEnd < offset || !record.source.slice(offset, tagEnd).includes('<')) return record;
+    const text = document.getText();
+    const patched = `${text.slice(0, offset)}${record.tagSyntax === 'square' ? ']' : '>'}${text.slice(offset)}`;
+    return { uri: document.uri, ...parseTemplate(patched, syntaxOptions()) };
+  }
+
   async completions(document, position, triggerCharacter) {
     await this.ready;
-    const record = this.currentRecord(document);
+    const record = this.completionRecord(document, document.offsetAt(position));
     const offset = document.offsetAt(position);
     const beforeCursor = record.source.slice(0, offset);
     const templatePath = /<#(?:import|include)\s+r?(["'])([^"'<>]*)$/.exec(beforeCursor);
@@ -2344,11 +2432,12 @@ class TemplateWorkspaceIndex {
     const macroValue = this.isMacroArgumentValue(record.source, offset);
     const macroArguments = macroValue ? undefined : this.macroArgumentCompletions(record, record.source, offset);
     if (macroArguments !== undefined) return macroArguments;
-    const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.$/.exec(beforeCursor);
+    const namespaceMatch = /((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)?$/.exec(beforeCursor);
     // An argument such as alias.| offers the members of alias, not the arguments.
     const functionArguments = namespaceMatch ? undefined : this.functionArgumentCompletions(record, beforeCursor);
     if (functionArguments !== undefined) return functionArguments;
-    const interpolationContext = macroValue || this.isInterpolationContext(record.source, offset);
+    const interpolationContext = macroValue || this.isInterpolationContext(record.source, offset)
+      || this.isDirectiveExpression(record.source, offset);
     let declarations = [];
 
     if (namespaceMatch) {
@@ -2456,7 +2545,31 @@ class TemplateWorkspaceIndex {
       item.insertText = symbol.name;
       return item;
     });
-    return [...symbolItems, ...snippetItems];
+    return [...symbolItems, ...snippetItems, ...(namespaceMatch && declarations.length === 0
+      ? this.usedMemberCompletions(record, namespaceMatch[1], offset, namespaceMatch[2] || '')
+      : [])];
+  }
+
+  // The members of a variable whose content is not known, as far as the template uses them:
+  // farbe. offers rot and gelb after farbe.rot and farbe.gelb.
+  usedMemberCompletions(record, variablePath, offset, typed = '') {
+    const root = variablePath.split('.')[0];
+    const known = this.scopeDeclarations(record, offset, this.namespaceDeclarations(record, true))
+      .some(({ symbol }) => symbol.kind === 'variable' && symbol.name === root);
+    if (!known) return [];
+    const escaped = variablePath.replace(/\./g, '\\.');
+    const members = new Set();
+    const usage = new RegExp(`(?<![A-Za-z0-9_.])${escaped}\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()`, 'g');
+    let match;
+    // The part of the name that is typed is not a member yet.
+    const source = record.source.slice(0, offset - typed.length) + record.source.slice(offset);
+    while ((match = usage.exec(source)) !== null) members.add(match[1]);
+    return [...members].sort().map((name) => {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Property);
+      item.detail = `Used on ${variablePath} in this template`;
+      item.sortText = `05_${name.toLowerCase()}`;
+      return item;
+    });
   }
 }
 
@@ -2528,7 +2641,7 @@ function activate(context) {
     vscode.languages.registerCompletionItemProvider({ language: 'freemarker' }, {
       provideCompletionItems: (document, position, _token, context) =>
         index.completions(document, position, context && context.triggerCharacter)
-    }, '.', '@', ' ', '?', '#', ...pathTriggerCharacters),
+    }, '.', '@', ' ', '?', '#', '=', ...pathTriggerCharacters),
     vscode.languages.registerDocumentLinkProvider({ language: 'freemarker' }, {
       provideDocumentLinks: async (document) => {
         await index.ready;
@@ -2617,7 +2730,13 @@ function activate(context) {
     }),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'freemarker' }, {
       provideDocumentFormattingEdits: (document, options) => {
-        const formatted = formatTemplate(document.getText(), { ...options, ...syntaxOptions() });
+        const configuration = vscode.workspace.getConfiguration('freemarker');
+        const formatted = formatTemplate(document.getText(), {
+          ...options,
+          ...syntaxOptions(),
+          wrapLongLines: configuration.get('wrapLongLines', false),
+          wrapLineLength: configuration.get('wrapLineLength', 160)
+        });
         if (formatted === document.getText()) return [];
         return [vscode.TextEdit.replace(
           new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
@@ -2730,6 +2849,9 @@ function activate(context) {
         pendingMoveEdits.set(renameKey(event.files), index.movedTemplateEdits(event.files));
       }));
     }),
+    // The index follows folders that are moved, created or deleted: the watcher only reports templates.
+    ...['onDidRenameFiles', 'onDidCreateFiles', 'onDidDeleteFiles'].map((event) =>
+      vscode.workspace[event](() => index.resync().then(validateOpenDocuments, () => undefined))),
     vscode.workspace.onDidRenameFiles(async (event) => {
       // Templates that git tracks are moved in the index too, so that git shows a rename.
       if (vscode.workspace.getConfiguration('freemarker').get('gitMoveFiles', true)) {

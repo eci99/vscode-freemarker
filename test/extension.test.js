@@ -375,6 +375,8 @@ const vscode = {
       onWillRenameFiles = listener;
       return disposable;
     },
+    onDidCreateFiles: () => disposable,
+    onDidDeleteFiles: () => disposable,
     onDidRenameFiles: (listener) => {
       onDidRenameFiles = listener;
       return disposable;
@@ -515,9 +517,21 @@ async function run() {
   assert.strictEqual(await applyTypedCharacter('<@render>', '>'), '<@render></@render>');
 
   // No closing tags inside of strings
-  for (const inString of ['<#assign x = "<#if a>', '<#assign x = \'<div>', '<@m t="a ${b} <#list c>', '<#if a><#assign x = "</']) {
+  for (const inString of ['<#assign x = "<#if a>', '<@m t="a ${b} <#list c>', '<#if a><#assign x = "</']) {
     assert.strictEqual(await applyTypedCharacter(inString, inString.slice(-1)), inString, inString);
   }
+  // HTML in strings is closed
+  assert.strictEqual(await applyTypedCharacter('<#assign x = \'<div>', '>'), '<#assign x = \'<div></div>');
+  assert.strictEqual(await applyTypedCharacter('${"<b>', '>'), '${"<b></b>');
+  assert.strictEqual(await applyTypedCharacter('<#assign x = "<img>', '>'), '<#assign x = "<img>');
+  assert.strictEqual(await applyTypedCharacter('<@m t="<a href=\\"x\\">', '>'), '<@m t="<a href=\\"x\\"></a>');
+  assert.strictEqual(
+    await applyTypedCharacter('<#assign x = "<p>a</', '/', undefined, '<#assign x = "<p>a</p>'.length),
+    '<#assign x = "<p>a</p>'
+  );
+  assert.strictEqual(await applyTypedCharacter('<div><#assign x = "a</', '/'), '<div><#assign x = "a</');
+  assert.strictEqual(await applyTypedCharacter('<#assign x = "<#if a>', '>'), '<#assign x = "<#if a>');
+  assert.strictEqual(await applyTypedCharacter('<#assign x = "<a>"><#if b>', '>'), '<#assign x = "<a>"><#if b></#if>');
   assert.strictEqual(await applyTypedCharacter('<#assign x = "a"><#if b>', '>'), '<#assign x = "a"><#if b></#if>');
   assert.strictEqual(await applyTypedCharacter('<@m t="${f(1)}"><#if b>', '>'), '<@m t="${f(1)}"><#if b></#if>');
   assert.strictEqual(await applyTypedCharacter('<#assign x = "${y?then(\'<p>\', \'\')}"><#if b>', '>'), '<#assign x = "${y?then(\'<p>\', \'\')}"><#if b></#if>');
@@ -1010,6 +1024,52 @@ async function run() {
   );
   assert.deepStrictEqual(laterMacroArgumentCompletions, []);
   assert(providers.completionTriggerCharacters.includes(' '));
+  assert(providers.completionTriggerCharacters.includes('='));
+  // A part of a name after the dot is completed as well
+  const memberPartialDocument = new Document(mainUri, '<#list colors as color>\n  <@box name=color.technicalName red=color.red color.te />\n</#list>');
+  const memberPartialCompletions = await providers.completion.provideCompletionItems(
+    memberPartialDocument, memberPartialDocument.positionAt(memberPartialDocument.getText().indexOf('color.te />') + 'color.te'.length)
+  );
+  assert.deepStrictEqual(memberPartialCompletions.map((item) => item.label), ['red', 'technicalName']);
+  const partialNamespaceDocument = new Document(mainUri, `${mainText}\n\${cards.th`);
+  const partialNamespaceCompletions = await providers.completion.provideCompletionItems(
+    partialNamespaceDocument, partialNamespaceDocument.positionAt(partialNamespaceDocument.getText().length)
+  );
+  assert(partialNamespaceCompletions.some((item) => item.insertText === 'theme'));
+  const compoundText = '<#macro m><#local config+={"name":"${FARBEN?size}_${config.name}"}/></#macro>';
+  const compoundDocument = new Document(mainUri, compoundText);
+  const compoundDefinition = await providers.definition.provideDefinition(compoundDocument, compoundDocument.positionAt(compoundText.indexOf('config.name') + 3));
+  assert.strictEqual(compoundDefinition.range.start.character, '<#macro m><#local '.length);
+
+  // A member of a loop variable: the variable is the definition, and its members are the ones the template uses
+  const loopText = '<#list colors as color>\n  <@box name=color.technicalName red=color.red />\n</#list>';
+  const loopDocument = new Document(mainUri, loopText);
+  const colorOffset = loopText.indexOf('color.red') + 2;
+  assert.strictEqual((await providers.definition.provideDefinition(loopDocument, loopDocument.positionAt(colorOffset))).range.start.character, '<#list colors as '.length);
+  assert.strictEqual((await providers.references.provideReferences(loopDocument, loopDocument.positionAt(colorOffset), {})).length, 2);
+  assert(await providers.hover.provideHover(loopDocument, loopDocument.positionAt(colorOffset)));
+  const memberDocument = new Document(mainUri, loopText.replace('color.red />', 'color.red color. />'));
+  const memberCompletions = await providers.completion.provideCompletionItems(
+    memberDocument, memberDocument.positionAt(memberDocument.getText().indexOf('color. />') + 'color.'.length)
+  );
+  assert.deepStrictEqual(memberCompletions.map((item) => item.label), ['red', 'technicalName']);
+
+  // Values of arguments and expressions of directives offer variables, not argument names
+  for (const tail of [
+    '<@cards.render title=', '<@cards.render title=!', '<@cards.render title=theme + ', '<@cards.render title=[',
+    '<@cards.render title={"a": ', '<@cards.render title=theme!', '<@cards.render title=theme className=',
+    '<@cards.render title=${', '<#assign q = ', '<#if ', '<#if x == ', '<#list '
+  ]) {
+    const valueDocument = new Document(mainUri, `${mainText}\n${tail}`);
+    const valueCompletions = await providers.completion.provideCompletionItems(valueDocument, valueDocument.positionAt(valueDocument.getText().length));
+    assert(valueCompletions.some((item) => item.insertText === 'pageTitle'), tail);
+    assert(!valueCompletions.some((item) => item.kind === vscode.CompletionItemKind.Property), tail);
+  }
+  for (const tail of ['<#assign q', '<#list items as ', '<@cards.render title=theme ']) {
+    const nameDocument = new Document(mainUri, `${mainText}\n${tail}`);
+    const nameCompletions = await providers.completion.provideCompletionItems(nameDocument, nameDocument.positionAt(nameDocument.getText().length));
+    assert(!nameCompletions.some((item) => item.insertText === 'pageTitle'), tail);
+  }
 
   // Semantic highlighting of parameters and variables
   assert.deepStrictEqual(providers.semanticTokensLegend.tokenTypes, ['parameter', 'variable', 'namespace', 'macro', 'function']);
@@ -2103,6 +2163,18 @@ async function run() {
   ]);
   assert.deepStrictEqual(movedFolder['/virtual/work/views/pages/caller.ftl'], [[0, 10, '../../lib/cards.ftl']]);
 
+  // A template read from the disk starts with its byte order mark, which the editor does not count.
+  for (const [fsPath, text] of [
+    ['/virtual/work/bom/a/x.ftl', '\uFEFF<#import "../b/y.ftl" as y>\r\n<#include "../b/y.ftl">'],
+    ['/virtual/work/bom/b/y.ftl', 'text']
+  ]) {
+    files.set(fsPath, text);
+    onDidOpenDocument(new Document(uri(fsPath), text));
+  }
+  assert.deepStrictEqual(await moveFiles([['/virtual/work/bom/a', '/virtual/work/bom/c/a']]), {
+    '/virtual/work/bom/c/a/x.ftl': [[0, 10, '../../b/y.ftl'], [1, 11, '../../b/y.ftl']]
+  });
+
   // Paths from the workspace root keep their leading slash, and paths without an extension stay without one.
   const rootedUri = uri('/virtual/work/pages/rooted.ftl');
   onDidOpenDocument(new Document(rootedUri, '<#import "/lib/cards.ftl" as c>\n<#include "./shared">\n<#include "lib/config.ftl">'));
@@ -2220,7 +2292,8 @@ async function squareBracketMirror(initialFiles) {
   // their interpolations as [=x] where the templates use that syntax. ${1:x} is a snippet placeholder.
   const translated = (value, interpolations) => JSON.parse(JSON.stringify(value), (_key, item) => {
     if (typeof item !== 'string') return item;
-    const tags = toSquareBracketSyntax(item);
+    // A tag that is not finished stays as it is; the cursor is in it.
+    const tags = toSquareBracketSyntax(item).replace(/<([#@][A-Za-z_])/g, '[$1');
     return interpolations
       ? tags.replace('${${1:expression}}', '[=${1:expression}]').replace(/\\?\$\{(?!\d+:)([^{}]*?)\\?\}/g, '[=$1]')
       : tags;

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.12 - 2026-10-23
+
+Added
+
+- Format Document can break long FreeMarker tags: with `freemarker.wrapLongLines` on, a tag longer than `freemarker.wrapLineLength` (160) goes on in indented lines, before named arguments, before `&&` and `||`, and between the parameters of a macro or function. Strings, comments, text, `<pre>`, and `@formatter:off` regions are never split. The setting is off by default
+- Suggestions after the dot also work for a part of a name (`config.na`), and for a variable whose content is not known they offer the members that the template uses elsewhere (`farbe.rot`)
+- `<#assign a=1 b=2>` declares every variable of the tag, and `config += {...}` declares `config` if nothing before it does
+- HTML tags in strings get syntax highlighting and are closed automatically (`"<b>"` becomes `"<b></b>"`)
+- An unclosed string in a tag or interpolation is reported as an error
+
+Fixed
+
+- Suggestions for the value of an argument (`<@m title=a + `), in directives such as `<#if` and `<#assign x = `, and for the parameters, local variables, and loop variables of the enclosing macro while the tag is still being typed
+- Go to Definition, Find All References, and hover on `variable` in `variable.member`
+- A comment inside a multi-line directive such as `<#assign x = {` is no longer highlighted like code
+- The index follows moved, created, and deleted folders, so templates in a moved folder are found again
+- Moving a folder updates the first import of templates that start with a byte order mark correctly
+
 ## 0.1.11 - 2026-10-21
 
 Added

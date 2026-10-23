@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -87,6 +87,17 @@
           "type": "boolean",
           "default": true,
           "description": "Report names that are declared neither in the template nor in the templates it includes or imports, as information, since they may come from the data model. Turn this off if the templates use many names from the data model."
+        },
+        "freemarker.wrapLongLines": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format Document breaks FreeMarker tags that are longer than freemarker.wrapLineLength into several lines: before named arguments of a macro call, before && and || in conditions, and between the parameters of a macro or function. Nothing else is split or joined."
+        },
+        "freemarker.wrapLineLength": {
+          "type": "integer",
+          "default": 160,
+          "minimum": 40,
+          "description": "The line length from which Format Document breaks a FreeMarker tag, if freemarker.wrapLongLines is on."
         },
         "freemarker.updatePathsOnFileMove": {
           "type": "string",

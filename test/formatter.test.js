@@ -220,3 +220,36 @@ assert.deepStrictEqual(
 );
 
 console.log('Formatter tests passed.');
+// Long tags are broken only when the switch is on
+{
+  const named = Array.from({ length: 12 }, (_, index) => `attr${index}=value${index}.something`).join(' ');
+  const long = `<@box title="a long title" ${named} />`;
+  const condition = Array.from({ length: 14 }, (_, index) => `item${index}.flag == 1`).join(' && ');
+  const parameters = Array.from({ length: 20 }, (_, index) => `param${index}Name`).join(' ');
+  const template = `<#if x>\n${long}\n<#if ${condition}>y</#if>\n<#macro m ${parameters}>z</#macro>\n</#if>`;
+  assert.strictEqual(formatTemplate(template), formatTemplate(template, { wrapLongLines: false }));
+  const wrapped = formatTemplate(template, { wrapLongLines: true });
+  const lines = wrapped.split('\n');
+  assert(lines.every((line) => line.length <= 160));
+  assert(lines.length > template.split('\n').length);
+  assert(lines.some((line) => line.startsWith('        && item')));
+  // Only whitespace changes, the formatting stays as it is when it is repeated
+  assert.strictEqual(wrapped.replace(/\s+/g, ' '), formatTemplate(template).replace(/\s+/g, ' '));
+  assert.strictEqual(formatTemplate(wrapped, { wrapLongLines: true }), wrapped);
+  assert.strictEqual(formatTemplate(template, { wrapLongLines: true, wrapLineLength: 400 }), formatTemplate(template));
+
+  // Square brackets, strings, comments, formatter:off and text that is not a tag stay as they are
+  const square = `[@box title="a long, long title with  spaces" ${named}/]`;
+  const wrappedSquare = formatTemplate(square, { wrapLongLines: true });
+  assert(wrappedSquare.startsWith('[@box title="a long, long title with  spaces" attr0'));
+  assert(wrappedSquare.endsWith('attr11=value11.something/]'));
+  const untouched = [
+    `<#-- ${long} -->`,
+    `<p>${'word '.repeat(50)}</p>`,
+    `<#assign x = "${'a b '.repeat(60)}">`,
+    `<pre>\n${long}\n</pre>`,
+    `<#-- @formatter:off -->\n${long}\n<#-- @formatter:on -->`
+  ].join('\n');
+  assert.strictEqual(formatTemplate(untouched, { wrapLongLines: true }), formatTemplate(untouched));
+  assert.strictEqual(formatTemplate(`${long}\r\n<p/>`, { wrapLongLines: true }).split('\r\n').length, 4);
+}

@@ -372,7 +372,115 @@ function formatTemplate(text, options = {}) {
     return `${indentUnit.repeat(lineDepth)}${content}`;
   });
 
-  return formatted.join(newline);
+  const result = formatted.join(newline);
+  return options.wrapLongLines ? wrapLongTags(result, options, indentUnit, newline) : result;
+}
+
+// Where a FreeMarker tag may go on in a new line without changing what it does: before a
+// named argument (name=value), before && and || in a condition, and between the parameters
+// of a macro or function. Only places outside of strings and brackets count, and none that
+// would leave the name of the tag alone on its line.
+function tagBreakOffsets(text, tag) {
+  const header = /^<\/?[#@][A-Za-z_][A-Za-z0-9_.-]*/.exec(text.slice(tag.offset, tag.end));
+  if (!header) return [];
+  const parameters = tag.directive && (tag.name === 'macro' || tag.name === 'function');
+  const offsets = [];
+  let quote = null;
+  let raw = false;
+  let depth = 0;
+  for (let index = tag.offset + header[0].length; index < tag.end; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === '\\' && !raw) index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      raw = isRawStringStart(text, index);
+    } else if ('([{'.includes(character)) {
+      depth += 1;
+    } else if (')]}'.includes(character)) {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && /\s/.test(character) && !/\s/.test(text[index - 1])) {
+      let next = index;
+      while (next < tag.end && /\s/.test(text[next])) next += 1;
+      const rest = text.slice(next, tag.end);
+      const previous = text.slice(tag.offset + header[0].length, index).trimEnd();
+      if (!previous || /=$/.test(previous) || /^=/.test(rest)) continue;
+      const argument = /^[A-Za-z_][A-Za-z0-9_.-]*\s*=(?!=)/.test(rest);
+      const condition = /^(?:&&|\|\||and\b|or\b)/.test(rest);
+      const parameter = parameters && /^[A-Za-z_]/.test(rest);
+      if (argument || condition || parameter) offsets.push({ start: index, next });
+    }
+  }
+  return offsets;
+}
+
+// Breaks the FreeMarker tags that start a line and are longer than the line may be. The
+// parts go on in lines indented one level below the tag, the way the formatter indents
+// the rest of a tag, so formatting the result again changes nothing. Comments, regions
+// between @formatter:off and @formatter:on, and the content of <pre>, <textarea>,
+// <script> and <style> are left as they are.
+function wrapLongTags(text, options, indentUnit, newline) {
+  const limit = Math.max(40, Math.floor(options.wrapLineLength) || 160);
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => line.length > limit)) return text;
+
+  const normalized = maskComments(normalizeTemplate(text, options).text);
+  const structure = templateStructure(normalized);
+  const lineOffsets = [0];
+  for (let index = normalized.indexOf('\n'); index >= 0; index = normalized.indexOf('\n', index + 1)) {
+    lineOffsets.push(index + 1);
+  }
+  const lineOf = (offset) => {
+    let line = lineOffsets.length - 1;
+    while (lineOffsets[line] > offset) line -= 1;
+    return line;
+  };
+
+  const disabled = new Set();
+  let off = false;
+  lines.forEach((line, lineIndex) => {
+    const marker = formatterMarker(line);
+    if (off || marker === 'off') disabled.add(lineIndex);
+    if (marker === 'off') off = true;
+    else if (marker === 'on') off = false;
+  });
+
+  const wrapped = new Map();
+  for (const tag of freemarkerTags(normalized)) {
+    const lineIndex = lineOf(tag.offset);
+    if (wrapped.has(lineIndex) || disabled.has(lineIndex) || lineOf(tag.end) !== lineIndex) continue;
+    const line = lines[lineIndex];
+    const start = tag.offset - lineOffsets[lineIndex];
+    if (line.length <= limit || line.slice(0, start).trim()) continue;
+    if (structure.regions.some((region) => lineIndex >= region.first && lineIndex <= region.last)) continue;
+    // A line that continues a string or a tag is not the start of one.
+    if (structure.continuations.has(lineIndex)) continue;
+
+    const indentation = line.slice(0, start);
+    const breaks = tagBreakOffsets(normalized, tag);
+    if (!breaks.length) continue;
+    const pieces = [];
+    let from = tag.offset;
+    for (const point of breaks) {
+      pieces.push(text.slice(from, point.start).trimEnd());
+      from = point.next;
+    }
+    // The rest of the line, with the end of the tag, goes on the last piece.
+    pieces.push(text.slice(from, lineOffsets[lineIndex] + line.length));
+
+    const result = [indentation + pieces[0]];
+    for (const piece of pieces.slice(1)) {
+      const last = result[result.length - 1];
+      if (last.length + 1 + piece.length <= limit) result[result.length - 1] = `${last} ${piece}`;
+      else result.push(indentation + indentUnit + piece);
+    }
+    if (result.length > 1) wrapped.set(lineIndex, result);
+  }
+  if (!wrapped.size) return text;
+  return lines.flatMap((line, lineIndex) => wrapped.get(lineIndex) || [line]).join(newline);
 }
 
 module.exports = { formatTemplate };

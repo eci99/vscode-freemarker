@@ -145,3 +145,17 @@ assert.deepStrictEqual(escapedBackslash.symbols[0].parameters, [
 ]);
 
 console.log('Template parser tests passed.');
+// <#assign> with several variables declares each of them
+const multiple = parseTemplate('<#assign a=1 b = "x y" c = {"k": 2, "l": a} d = a + (b == c)>');
+const multipleVariables = multiple.symbols.filter((symbol) => symbol.kind === 'variable' && !symbol.name.includes('.'));
+assert.deepStrictEqual(multipleVariables.map((symbol) => [symbol.name, symbol.value]), [
+  ['a', '1'], ['b', '"x y"'], ['c', '{"k": 2, "l": a}'], ['d', 'a + (b == c)']
+]);
+assert(multiple.symbols.some((symbol) => symbol.name === 'c.k'));
+
+// config += {...} declares a variable only when there is no declaration before it
+const compound = parseTemplate('<#local config+={"n": 1}/><#local config += {"m": 2}/><#local other = 1/><#local other+=2/>');
+assert.deepStrictEqual(
+  compound.symbols.filter((symbol) => symbol.kind === 'variable' && !symbol.name.includes('.')).map((symbol) => symbol.name),
+  ['config', 'other']
+);

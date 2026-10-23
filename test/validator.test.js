@@ -176,3 +176,8 @@ assert.deepStrictEqual(validateTemplate("<#if (a>b)>x</#if>"), []);
 assert.deepStrictEqual(validateTemplate('<#macro m config="{\\\\"+name+"}" flag=true>x</#macro>'), []);
 
 console.log('Template validator tests passed.');
+// A string that is not closed
+const stringIssues = (text) => validateTemplate(text).filter((issue) => issue.message.startsWith('Unclosed string')).map((issue) => issue.message);
+assert.deepStrictEqual(stringIssues('<#assign a = "foo>\n<p>x</p>\n<#assign b = "bar">'), ['Unclosed string, missing ".']);
+assert.deepStrictEqual(stringIssues("${'abc}\ntext"), ["Unclosed string, missing '."]);
+assert.deepStrictEqual(stringIssues('<#if a == "x">${"y ${z}"}</#if> <#assign q = r"C:\\">'), []);

@@ -176,6 +176,55 @@ function validateHashes(source, blocks) {
   return diagnostics;
 }
 
+// A string literal in the expression of a tag or interpolation that is not closed on its line.
+function validateStrings(source, blocks) {
+  const diagnostics = [];
+  const unparsed = blocks.filter((block) => block.name === 'noparse');
+  const expressionPattern = /[$#]\{|<[#@][A-Za-z_]/g;
+  let match;
+  while ((match = expressionPattern.exec(source)) !== null) {
+    const start = match.index + 2;
+    if (unparsed.some((block) => start > block.open.offset + block.open.length && start < block.close.offset)) continue;
+    const tag = match[0][0] === '<';
+    let quote = null;
+    let quoteOffset = 0;
+    let nesting = 0;
+    let parentheses = 0;
+    let index = start;
+    for (; index < source.length; index += 1) {
+      const character = source[index];
+      if (character === '\n' && quote) break;
+      if (quote) {
+        if (character === '\\') index += 1;
+        else if (character === quote) quote = null;
+        else if ((character === '$' || character === '#') && source[index + 1] === '{') {
+          const close = findInterpolationEnd(source, index + 2);
+          if (close > 0 && !source.slice(index, close).includes('\n')) index = close;
+        }
+      } else if (character === '"' || character === "'") {
+        quote = character;
+        quoteOffset = index;
+      } else if (tag) {
+        if (character === '(') parentheses += 1;
+        else if (character === ')') parentheses = Math.max(0, parentheses - 1);
+        else if (character === '>' && parentheses === 0) break;
+      } else if (character === '{') {
+        nesting += 1;
+      } else if (character === '}') {
+        if (nesting === 0) break;
+        nesting -= 1;
+      }
+    }
+    if (quote) {
+      const lineEnd = source.indexOf('\n', quoteOffset);
+      const text = source.slice(quoteOffset, lineEnd < 0 ? source.length : lineEnd).trimEnd();
+      diagnostics.push({ message: `Unclosed string, missing ${quote}.`, offset: quoteOffset, length: text.length });
+    }
+    expressionPattern.lastIndex = Math.max(index, start);
+  }
+  return diagnostics;
+}
+
 function tagLabel(tag, closing = false) {
   const label = `${closing ? '/' : ''}${tag.kind === 'directive' ? '#' : '@'}${tag.name}`;
   return tag.square ? `[${label}]` : `<${label}>`;
@@ -420,7 +469,7 @@ function htmlTags(source) {
 function validateTemplate(text, options = {}) {
   const { source, blocks, diagnostics } = templateBlocks(text, options);
   const htmlDiagnostics = options.validateHtml === false ? [] : htmlTags(source).diagnostics;
-  return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks), ...validateHashes(source, blocks)];
+  return [...diagnostics, ...htmlDiagnostics, ...validateBuiltins(source, blocks), ...validateHashes(source, blocks), ...validateStrings(source, blocks)];
 }
 
 module.exports = { findHtmlTagEnd, htmlTags, templateBlocks, validateTemplate };
