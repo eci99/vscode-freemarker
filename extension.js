@@ -35,11 +35,16 @@ const semanticTokensLegend = new vscode.SemanticTokensLegend(
 const pathTriggerCharacters = ['"', "'", '/'];
 const htmlTagNamePattern = /^[A-Za-z][A-Za-z0-9:-]*$/;
 
-const autoCloseDirectives = new Set([
-  'if', 'list', 'foreach', 'switch', 'macro', 'function', 'attempt', 'compress',
-  'noparse', 'outputformat', 'autoesc', 'noautoesc', 'escape', 'transform',
-  'items', 'sep', 'assign', 'local', 'global'
-]);
+// Whether a start tag needs an end tag, as <#if x> and <#assign x> do, but not <#assign x = 1>
+// or <#sep>, whose end tag is optional. `body` is the text of the tag after its name.
+function directiveNeedsEndTag(name, body) {
+  const directive = findDirective(name);
+  if (!directive) return false;
+  if (directive.block === 'capture') {
+    return /^\s*(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]*"|'[^']*')(?:\s+in\s[\s\S]+)?\s*$/.test(body);
+  }
+  return directive.block === 'required';
+}
 
 // Whether the offset is inside a string literal of a tag or interpolation, as in <#assign x = "|".
 // The text is in the default syntax. An interpolation in a string is an expression again.
@@ -136,7 +141,7 @@ function closingTextAfterTypedTag(document, change, record) {
   let closeTag;
   if (special) {
     if (inString) return undefined;
-    if (special[1] === '#' && !autoCloseDirectives.has(special[2])) return undefined;
+    if (special[1] === '#' && !directiveNeedsEndTag(special[2], header.slice(special[0].length))) return undefined;
     closeTag = `${opener}/${special[1]}${special[2]}${ending}`;
     if (special[1] === '#' && ending === '>' && /\s>$/.test(header)) return undefined;
   } else {
@@ -182,6 +187,58 @@ function closingTagAfterTypedSlash(document, change, record) {
   const cursorOffset = change.rangeOffset + change.text.length;
   if (record.source.slice(cursorOffset).startsWith(closingText)) return undefined;
   return closingText;
+}
+
+// The end of a tag that a slash typed at its end makes self-closing, as in <#include "a.ftl" |
+// or <br|. A slash that can be a division, as in <#assign x = a |, or part of an unquoted
+// attribute value, as in <a href=|, is left alone.
+function tagEndAfterTypedSlash(document, change, record) {
+  if (change.rangeLength !== 0 || change.text !== '/') return undefined;
+  const source = record.source;
+  const slash = change.rangeOffset;
+  if (!/^[ \t]*(\r?\n|$)/.test(source.slice(slash + 1))) return undefined;
+
+  // The start of the tag; in a string only the HTML of that string.
+  const stringStart = stringLiteralStart(source, slash);
+  let tagStart = source.lastIndexOf('<', slash - 1);
+  while (stringStart < 0 && tagStart >= 0 && isInStringLiteral(source, tagStart)) {
+    tagStart = source.lastIndexOf('<', tagStart - 1);
+  }
+  if (tagStart < 0 || tagStart < stringStart) return undefined;
+  // The quotes around the attributes of HTML in a string are escaped.
+  const rawHeader = source.slice(tagStart + 1, slash);
+  const header = stringStart >= 0 ? rawHeader.replace(/\\./g, '  ') : rawHeader;
+  const special = /^[#@]([A-Za-z_][A-Za-z0-9_.-]*)/.exec(header);
+  const html = /^[A-Za-z][A-Za-z0-9:-]*/.exec(header);
+  if (special ? stringStart >= 0 : !html) return undefined;
+
+  let quote = null;
+  let parentheses = 0;
+  for (let index = 0; index < header.length; index += 1) {
+    const character = header[index];
+    if (quote) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '(') {
+      parentheses += 1;
+    } else if (character === ')') {
+      parentheses = Math.max(0, parentheses - 1);
+    } else if (character === '>' && parentheses === 0) {
+      return undefined;
+    }
+  }
+  if (quote || parentheses > 0) return undefined;
+
+  const beforeSlash = header.trimEnd();
+  if (special) {
+    if (beforeSlash !== special[0] && !/["']$/.test(beforeSlash)) return undefined;
+    return record.tagSyntax === 'square' ? ']' : '>';
+  }
+  const lastToken = header.split(/\s+/).pop();
+  if (lastToken.includes('=') && !/["']$/.test(lastToken)) return undefined;
+  return '>';
 }
 
 // The end tag that belonged to a start tag that a typed slash just made self-closing, as in
@@ -2767,6 +2824,13 @@ function activate(context) {
         if (closingEndTag) {
           const finalCursor = new vscode.Position(cursor.line, cursor.character + closingEndTag.length);
           return editor.edit((editBuilder) => editBuilder.insert(cursor, closingEndTag)).then((applied) => {
+            if (applied) editor.selection = new vscode.Selection(finalCursor, finalCursor);
+          });
+        }
+        const tagEnd = tagEndAfterTypedSlash(event.document, change, record);
+        if (tagEnd) {
+          const finalCursor = new vscode.Position(cursor.line, cursor.character + tagEnd.length);
+          return editor.edit((editBuilder) => editBuilder.insert(cursor, tagEnd)).then((applied) => {
             if (applied) editor.selection = new vscode.Selection(finalCursor, finalCursor);
           });
         }

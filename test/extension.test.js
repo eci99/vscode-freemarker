@@ -515,6 +515,16 @@ async function run() {
   assert.strictEqual(await applyTypedCharacter('<section>', '>'), '<section></section>');
   assert.strictEqual(await applyTypedCharacter('<#macro render>', '>'), '<#macro render></#macro>');
   assert.strictEqual(await applyTypedCharacter('<@render>', '>'), '<@render></@render>');
+  // Only directives that need an end tag are closed.
+  assert.strictEqual(await applyTypedCharacter('<#noescape>', '>'), '<#noescape></#noescape>');
+  assert.strictEqual(await applyTypedCharacter('<#assign x>', '>'), '<#assign x></#assign>');
+  assert.strictEqual(await applyTypedCharacter('<#local x in ns>', '>'), '<#local x in ns></#local>');
+  for (const unclosed of [
+    '<#assign x = 1>', '<#assign x += 1>', '<#global x++>', '<#local a = 1 b = 2>', '<#sep>',
+    '<#recover>', '<#else>', '<#include "a.ftl">', '<#import "a.ftl" as a>', '<#break>', '<#unknown>'
+  ]) {
+    assert.strictEqual(await applyTypedCharacter(unclosed, '>'), unclosed, unclosed);
+  }
 
   // No closing tags inside of strings
   for (const inString of ['<#assign x = "<#if a>', '<@m t="a ${b} <#list c>', '<#if a><#assign x = "</']) {
@@ -571,7 +581,28 @@ async function run() {
   assert.strictEqual(await typeSlash('<@render|>'), '<@render/>');
   assert.strictEqual(await applyTypedCharacter('<@render/></@render>', '>', '<@render/'.length), '<@render/>');
   assert.strictEqual(await applyTypedCharacter('<span>a <span/> b</span>', '>', '<span>a <span/'.length), '<span>a <span/> b</span>');
+  // A slash typed at the end of a start tag ends the tag.
+  const endTag = (text, expected) => applyTypedCharacter(
+    text.replace('|', '/'), '/', text.indexOf('|'), expected.indexOf('|')
+  ).then((result) => assert.strictEqual(result, expected.replace('|', ''), text));
+  await endTag('<#include "a.ftl" |', '<#include "a.ftl" />|');
+  await endTag('<@render|', '<@render/>|');
+  await endTag('<@cards.render title="a" |\ntext', '<@cards.render title="a" />|\ntext');
+  await endTag('<#else|', '<#else/>|');
+  await endTag('<br|', '<br/>|');
+  await endTag('<input disabled |', '<input disabled />|');
+  await endTag('<img src="a.png"|', '<img src="a.png"/>|');
+  await endTag('<#assign x = "<br|', '<#assign x = "<br/>|');
+  for (const unchanged of [
+    '<|', '<#assign x = a |', '<#assign x = a|', '<@m x=a |', '<#if (a |', '<#include "a|',
+    '<a href=|', '<a href=x|', '<div| class="a">', '<div>|', 'a |', '<#assign x = "a |',
+    '<#if a < b |'
+  ]) {
+    await endTag(unchanged, unchanged.replace('|', '/|'));
+  }
   settings.tagSyntax = 'squareBracket';
+  await endTag('[#include "a.ftl" |', '[#include "a.ftl" /]|');
+  await endTag('<br|', '<br/>|');
   assert.strictEqual(await typeSlash('[#if ready]text[@render|][/@render][/#if]'), '[#if ready]text[@render/][/#if]');
   assert.strictEqual(await applyTypedCharacter('[#function total]', ']'), '[#function total][/#function]');
   assert.strictEqual(await applyTypedCharacter('[#if items[0]]', ']'), '[#if items[0]][/#if]');

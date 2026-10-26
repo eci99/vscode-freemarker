@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13 - 2026-10-26
+
+Added
+
+- Typing `/` at the end of a start tag adds the `>`: `<#include "a.ftl" />`, `<@render/>`, `<br/>`, also for HTML in strings and with square bracket syntax. A `/` that may be a division (`<#assign x = a /`) or part of an unquoted attribute value (`<a href=/`) is left alone
+
+Fixed
+
+- Directives whose end tag is not needed are no longer closed automatically: `<#assign x = 1>`, `<#local>` and `<#global>` with `=`, and `<#sep>` and `<#recover>`, whose end tag is optional. `<#noescape>` is now closed
+
 ## 0.1.12 - 2026-10-23
 
 Added
