@@ -8,13 +8,17 @@ const BRANCH_DIRECTIVES = new Set(['else', 'elseif', 'case', 'default', 'recover
 const CAPTURE_DIRECTIVES = new Set(['assign', 'local', 'global']);
 const CAPTURE_HEADER = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]*"|'[^']*')(?:\s+in\s[\s\S]+)?\s*$/;
 
+// In these blocks a line break before the end tag would be part of what they repeat,
+// capture or return, so their end tag stays where it is.
+const INLINE_END_DIRECTIVES = new Set(['list', 'foreach', 'items', 'sep', 'macro']);
+
 // The whitespace inside these elements is part of the page.
 const PREFORMATTED_ELEMENTS = new Set(['pre', 'textarea']);
 // Scripts and style sheets keep the indentation they have relative to their first line.
 const RAW_TEXT_ELEMENTS = new Set(['script', 'style']);
 
 const { isRawStringStart, normalizeTemplate } = require('./syntax');
-const { htmlTags } = require('./validator');
+const { findHtmlTagEnd, htmlTags } = require('./validator');
 
 function maskComments(text) {
   return text.replace(/<#--[\s\S]*?-->/g, (comment) =>
@@ -246,8 +250,85 @@ function openBrackets(text) {
   return depth;
 }
 
+// The lines that are between @formatter:off and @formatter:on, with the markers.
+function disabledLines(lines) {
+  const disabled = new Set();
+  let off = false;
+  lines.forEach((line, lineIndex) => {
+    const marker = formatterMarker(line);
+    if (off || marker === 'off') disabled.add(lineIndex);
+    if (marker === 'off') off = true;
+    else if (marker === 'on') off = false;
+  });
+  return disabled;
+}
+
+// Puts an end tag on a line of its own when its start tag is alone on its line, so
+// <#if x>⏎text</#if> becomes <#if x>⏎text⏎</#if>. This holds for FreeMarker blocks,
+// macro calls with a body, and HTML elements, but not for the content of <pre>,
+// <textarea>, <script> and <style>, and not between @formatter:off and @formatter:on.
+// A FreeMarker end tag moves only if nothing follows it on its line, since the line
+// break after it then is not output, and not for loops, macros and captures, so the
+// output stays the same.
+function separateEndTags(text, options, newline) {
+  const masked = maskComments(normalizeTemplate(text, options).text);
+  const lineStart = (offset) => masked.lastIndexOf('\n', offset - 1) + 1;
+  const lineEnd = (offset) => {
+    const end = masked.indexOf('\n', offset);
+    return end < 0 ? masked.length : end;
+  };
+  const alone = (start, end) => !masked.slice(lineStart(start), start).trim()
+    && !masked.slice(end + 1, lineEnd(end + 1)).trim();
+  const lineIndex = (offset) => masked.slice(0, offset).split('\n').length - 1;
+  const disabled = disabledLines(text.split(/\r?\n/));
+
+  // Pairs of { start, end, close }: the start tag from start to end, and the offset of the end tag.
+  const pairs = [];
+  const open = [];
+  for (const tag of freemarkerTags(masked)) {
+    const key = `${tag.directive ? '#' : '@'}${tag.name}`;
+    if (tag.closing) {
+      const opener = open.map((candidate) => candidate.key).lastIndexOf(key);
+      if (opener < 0) continue;
+      const start = open[opener];
+      open.length = opener;
+      if (start.inline || masked.slice(tag.end + 1, lineEnd(tag.end + 1)).trim()) continue;
+      pairs.push({ start: start.offset, end: start.end, close: tag.offset });
+    } else if (tag.directive
+      ? tag.capture || (BLOCK_DIRECTIVES.has(tag.name) && !BRANCH_DIRECTIVES.has(tag.name))
+      : !tag.selfClosing) {
+      open.push({ key, offset: tag.offset, end: tag.end, inline: tag.capture || INLINE_END_DIRECTIVES.has(tag.name) });
+    }
+  }
+  const verbatim = [];
+  for (const pair of htmlTags(masked).pairs) {
+    const name = masked.slice(pair.open, pair.open + pair.openLength).toLowerCase();
+    const end = findHtmlTagEnd(masked, pair.open + pair.openLength);
+    if (end < 0) continue;
+    const close = pair.close - 2;
+    if (PREFORMATTED_ELEMENTS.has(name) || RAW_TEXT_ELEMENTS.has(name)) {
+      verbatim.push({ from: end, to: PREFORMATTED_ELEMENTS.has(name) ? close + 1 : close });
+    }
+    pairs.push({ start: pair.open - 1, end, close });
+  }
+
+  const breaks = new Set();
+  for (const pair of pairs) {
+    if (!alone(pair.start, pair.end) || !masked.slice(lineStart(pair.close), pair.close).trim()) continue;
+    if (verbatim.some((region) => pair.close > region.from && pair.close < region.to)) continue;
+    if (disabled.has(lineIndex(pair.close))) continue;
+    breaks.add(pair.close);
+  }
+  let result = text;
+  for (const offset of [...breaks].sort((left, right) => right - left)) {
+    result = `${result.slice(0, offset).trimEnd()}${newline}${result.slice(offset)}`;
+  }
+  return result;
+}
+
 function formatTemplate(text, options = {}) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  if (options.separateEndTags !== false) text = separateEndTags(text, options, newline);
   const sourceLines = text.split(/\r?\n/);
   const normalizedText = normalizeTemplate(text, options).text;
   const maskedText = maskComments(normalizedText);
@@ -439,14 +520,7 @@ function wrapLongTags(text, options, indentUnit, newline) {
     return line;
   };
 
-  const disabled = new Set();
-  let off = false;
-  lines.forEach((line, lineIndex) => {
-    const marker = formatterMarker(line);
-    if (off || marker === 'off') disabled.add(lineIndex);
-    if (marker === 'off') off = true;
-    else if (marker === 'on') off = false;
-  });
+  const disabled = disabledLines(lines);
 
   const wrapped = new Map();
   for (const tag of freemarkerTags(normalized)) {

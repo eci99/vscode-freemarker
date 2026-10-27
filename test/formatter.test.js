@@ -219,6 +219,24 @@ assert.deepStrictEqual(
   ['[#if a]', '  [#assign t = "x', '  y"]', '[/#if]']
 );
 
+// An end tag goes on a line of its own when its start tag is alone on its line
+assert.deepStrictEqual(formatLines(['<#if x>', 'text</#if>']), ['<#if x>', '  text', '</#if>']);
+assert.deepStrictEqual(formatLines(['<@box title="a">', 'body  </@box>']), ['<@box title="a">', '  body', '</@box>']);
+assert.deepStrictEqual(formatLines(['<div>', '<p>', 'x</p></div>']), ['<div>', '  <p>', '    x', '  </p>', '</div>']);
+assert.strictEqual(formatTemplate('[#if x]\r\ntext[/#if]', { tabSize: 2 }), '[#if x]\r\n  text\r\n[/#if]');
+// Not if that would change the output, nor in <pre> and between @formatter:off and on
+for (const lines of [
+  ['<#if x>', 'text</#if> more'],
+  ['<#list xs as x>', '${x}<#sep>, </#list>'],
+  ['<#macro m>', 'body</#macro>'],
+  ['<#assign x>', 'value</#assign>'],
+  ['<span>text', 'more</span>'],
+  ['<pre>', 'a</pre>'],
+  ['<#-- @formatter:off -->', '<#if x>', 'text</#if>', '<#-- @formatter:on -->']
+]) {
+  assert.strictEqual(formatLines(lines).length, lines.length, lines.join('\n'));
+}
+
 console.log('Formatter tests passed.');
 // Long tags are broken only when the switch is on
 {

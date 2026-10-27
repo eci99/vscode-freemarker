@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -232,7 +232,8 @@
     "configurationDefaults": {
       "[freemarker]": {
         "editor.semanticHighlighting.enabled": true,
-        "editor.autoClosingPairs": "always"
+        "editor.autoClosingPairs": "always",
+        "editor.formatOnPaste": true
       }
     },
     "languages": [

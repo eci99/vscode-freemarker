@@ -2801,6 +2801,25 @@ function activate(context) {
         )];
       }
     }),
+    // A part of a template, such as lines that are pasted, is indented to fit where it is.
+    // Its lines stay as they are, so the rest of the document does not move.
+    vscode.languages.registerDocumentRangeFormattingEditProvider({ language: 'freemarker' }, {
+      provideDocumentRangeFormattingEdits: (document, range, options) => {
+        const lines = formatTemplate(document.getText(), {
+          ...options,
+          ...syntaxOptions(),
+          separateEndTags: false,
+          wrapLongLines: false
+        }).split(/\r?\n/);
+        const edits = [];
+        const last = range.end.character === 0 && range.end.line > range.start.line ? range.end.line - 1 : range.end.line;
+        for (let line = range.start.line; line <= last && line < document.lineCount; line += 1) {
+          const current = document.lineAt(line);
+          if (lines[line] !== undefined && lines[line] !== current.text) edits.push(vscode.TextEdit.replace(current.range, lines[line]));
+        }
+        return edits;
+      }
+    }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.languageId === 'freemarker') {
         index.currentRecord(event.document);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.14 - 2026-10-27
+
+Added
+
+- Pasted lines are formatted automatically: they are indented to fit where they are pasted. `editor.formatOnPaste` is on by default for FreeMarker and can be turned off. **Format Selection** works the same way. Only the indentation of the selected or pasted lines changes, the rest of the document stays as it is
+
+Changed
+
+- Format Document puts an end tag on a line of its own when its start tag is alone on its line: `<#if x>⏎text</#if>` becomes `<#if x>⏎    text⏎</#if>`, also for `<@...>` calls and HTML elements. FreeMarker end tags with more text after them, and the end tags of `<#list>`, `<#macro>`, and `<#assign>`, stay where they are, since moving them would change the output. `<pre>`, `<textarea>`, and `@formatter:off` regions are left alone
+
 ## 0.1.13 - 2026-10-26
 
 Added

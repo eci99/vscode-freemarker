@@ -132,7 +132,12 @@ class Document {
   }
 
   lineAt(line) {
-    return { text: this.text.split('\n')[line] };
+    const text = this.text.split('\n')[line];
+    return { text, range: new Range(new Position(line, 0), new Position(line, text.length)) };
+  }
+
+  get lineCount() {
+    return this.text.split('\n').length;
   }
 
   offsetAt(position) {
@@ -457,6 +462,10 @@ const vscode = {
       providers.formatting = provider;
       return disposable;
     },
+    registerDocumentRangeFormattingEditProvider: (_selector, provider) => {
+      providers.rangeFormatting = provider;
+      return disposable;
+    },
   }
 };
 
@@ -726,6 +735,12 @@ async function run() {
   });
   assert.strictEqual(formatEdits.length, 1);
   assert.strictEqual(formatEdits[0].newText, '<#if ready>\n  <p>Ready</p>\n</#if>');
+  // Pasted lines are indented to fit; the lines around them and their line breaks stay
+  const pasted = new Document(mainUri, '<#if ready>\n<div>\n<p>Ready</p></div>\n</#if>\n<p>x</p>');
+  const rangeEdits = providers.rangeFormatting.provideDocumentRangeFormattingEdits(
+    pasted, new Range(new Position(1, 0), new Position(3, 0)), { insertSpaces: true, tabSize: 2 }
+  );
+  assert.deepStrictEqual(rangeEdits.map((edit) => [edit.range.start.line, edit.newText]), [[1, '  <div>'], [2, '    <p>Ready</p></div>']]);
 
   const memberOffset = mainText.indexOf('cards.render') + 'cards.'.length;
   const memberDefinition = await providers.definition.provideDefinition(document, positionAt(mainText, memberOffset));
