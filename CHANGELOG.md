@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16 - 2026-10-31
+
+Changed
+
+- Published from GitHub Actions to the VS Code Marketplace and Open VSX. The package no longer contains the GitHub workflow
+
 ## 0.1.15 - 2026-10-31
 
 Fixed
