@@ -130,11 +130,12 @@ function toSquareBracketTags(text) {
 }
 
 // The offset of the } that ends an interpolation whose content starts at `start`, or -1.
-function interpolationEnd(text, start) {
+// The search ends at `limit`.
+function interpolationEnd(text, start, limit = text.length) {
   let quote = null;
   let raw = false;
   let nesting = 0;
-  for (let index = start; index < text.length; index += 1) {
+  for (let index = start; index < Math.min(limit, text.length); index += 1) {
     const character = text[index];
     if (quote) {
       if (character === '\\' && !raw) index += 1;
@@ -152,6 +153,101 @@ function interpolationEnd(text, start) {
   return -1;
 }
 
+// The comments of a template, as { start, end }, end being the offset after the -->. The
+// search stops at a comment that is not closed: no later one can be closed either.
+function commentRanges(text) {
+  const ranges = [];
+  for (let start = text.indexOf('<#--'); start >= 0; start = text.indexOf('<#--', start)) {
+    const close = text.indexOf('-->', start + 4);
+    if (close < 0) break;
+    ranges.push({ start, end: close + 3 });
+    start = close + 3;
+  }
+  return ranges;
+}
+
+// Blanks the comments of `text`, except for their line breaks. `original` is the same
+// template before it was rewritten to the default syntax, and gets the same ranges blanked.
+function maskComments(text, original = text) {
+  let result = '';
+  let end = 0;
+  for (const comment of commentRanges(text)) {
+    result += original.slice(end, comment.start) + text.slice(comment.start, comment.end).replace(/[^\r\n]/g, ' ');
+    end = comment.end;
+  }
+  return result + original.slice(end);
+}
+
+// For each offset, the next one at or after it where `found(index)` holds, or -1.
+function nextOffsets(text, found) {
+  const next = new Int32Array(text.length + 1).fill(-1);
+  for (let index = text.length - 1; index >= 0; index -= 1) next[index] = found(index) ? index : next[index + 1];
+  return next;
+}
+
+// The scans for the > of a tag and the } of an interpolation: a > inside parentheses and a
+// } that closes a { are no end, nor is anything in a string. `raw` lets r"..." strings
+// keep their backslashes.
+const TAG_SCAN = { open: '(', close: ')', end: '>' };
+const INTERPOLATION_SCAN = { open: '{', close: '}', end: '}' };
+
+// Where the scan from every offset of `text` ends, worked out in one pass from the end of
+// the text. A string or a bracket is skipped to its end, so the scan from an offset
+// continues where the scan from the offset after the skipped part does.
+function scanEnds(text, { open, close, end }, raw) {
+  const table = () => new Int32Array(text.length + 2).fill(-1);
+  const escaped = { '"': table(), "'": table() };
+  const plain = { '"': table(), "'": table() };
+  // Where a bracket that is open at an offset closes.
+  const closes = table();
+  const ends = table();
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    const character = text[index];
+    for (const quote of ['"', "'"]) {
+      plain[quote][index] = character === quote ? index : plain[quote][index + 1];
+      escaped[quote][index] = character === quote ? index
+        : character === '\\' ? escaped[quote][index + 2] : escaped[quote][index + 1];
+    }
+    let skipped = -1;
+    if (character === '"' || character === "'") {
+      skipped = (raw && isRawStringStart(text, index) ? plain : escaped)[character][index + 1];
+    } else if (character === open) {
+      skipped = closes[index + 1];
+    } else if (character === close) {
+      closes[index] = index;
+      // A ) without its ( is ignored by the scan for the end of a tag.
+      ends[index] = close === end ? index : ends[index + 1];
+      continue;
+    } else if (character === end) {
+      closes[index] = closes[index + 1];
+      ends[index] = index;
+      continue;
+    } else {
+      closes[index] = closes[index + 1];
+      ends[index] = ends[index + 1];
+      continue;
+    }
+    closes[index] = skipped < 0 ? -1 : closes[skipped + 1];
+    ends[index] = skipped < 0 ? -1 : ends[skipped + 1];
+  }
+  return ends;
+}
+
+// `scan(text, start)` for callers that scan from many offsets. An unclosed tag makes each
+// scan read to the end of the text, so once the scans have read more than twice the text,
+// the ends of all offsets are worked out at once.
+function repeatedScan(text, scan, kind, raw = false) {
+  let read = 0;
+  let ends;
+  return (start) => {
+    if (ends) return start >= 0 && start < ends.length ? ends[start] : -1;
+    const found = scan(text, start);
+    read += (found < 0 ? text.length : found) - start;
+    if (read > 2 * text.length) ends = scanEnds(text, kind, raw);
+    return found;
+  };
+}
+
 // The interpolations in the strings of text[start, end), as in "Hello ${name}", with the
 // ones inside of those. Each is { start, end }: the content and the offset of its }.
 function stringInterpolations(text, start, end) {
@@ -166,8 +262,8 @@ function stringInterpolations(text, start, end) {
       } else if (character === quote) {
         quote = null;
       } else if (!raw && (character === '$' || character === '#') && text[index + 1] === '{') {
-        const close = interpolationEnd(text, index + 2);
-        if (close < 0 || close >= end) break;
+        const close = interpolationEnd(text, index + 2, end);
+        if (close < 0) break;
         found.push({ start: index + 2, end: close }, ...stringInterpolations(text, index + 2, close));
         index = close;
       }
@@ -180,5 +276,6 @@ function stringInterpolations(text, start, end) {
 }
 
 module.exports = {
-  displayText, isRawStringStart, maskRawStrings, normalizeTemplate, resolveTagSyntax, stringInterpolations, toSquareBracketTags
+  INTERPOLATION_SCAN, TAG_SCAN, commentRanges, displayText, interpolationEnd, isRawStringStart, maskComments, maskRawStrings,
+  nextOffsets, normalizeTemplate, repeatedScan, resolveTagSyntax, scanEnds, stringInterpolations, toSquareBracketTags
 };

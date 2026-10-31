@@ -17,14 +17,10 @@ const PREFORMATTED_ELEMENTS = new Set(['pre', 'textarea']);
 // Scripts and style sheets keep the indentation they have relative to their first line.
 const RAW_TEXT_ELEMENTS = new Set(['script', 'style']);
 
-const { isRawStringStart, normalizeTemplate } = require('./syntax');
+const {
+  INTERPOLATION_SCAN, TAG_SCAN, commentRanges, interpolationEnd, isRawStringStart, maskComments, normalizeTemplate, repeatedScan
+} = require('./syntax');
 const { findHtmlTagEnd, htmlTags } = require('./validator');
-
-function maskComments(text) {
-  return text.replace(/<#--[\s\S]*?-->/g, (comment) =>
-    comment.replace(/[^\r\n]/g, ' ')
-  );
-}
 
 function findTagEnd(text, start) {
   let quote = null;
@@ -53,10 +49,11 @@ function findTagEnd(text, start) {
 function freemarkerTags(text) {
   const tags = [];
   const opening = /<(\/?)#([A-Za-z_][A-Za-z0-9_-]*)|<(\/?)@([A-Za-z_][A-Za-z0-9_.-]*)/g;
+  const tagEnd = repeatedScan(text, findTagEnd, TAG_SCAN, true);
   let match;
 
   while ((match = opening.exec(text)) !== null) {
-    const end = findTagEnd(text, opening.lastIndex);
+    const end = tagEnd(opening.lastIndex);
     if (end < 0) continue;
     const directive = match[2] !== undefined;
     const closing = directive ? match[1] === '/' : match[3] === '/';
@@ -175,6 +172,7 @@ function templateStructure(maskedText) {
 function multiLineInterpolations(text) {
   const found = [];
   const tags = freemarkerTags(text);
+  const closingBrace = repeatedScan(text, interpolationEnd, INTERPOLATION_SCAN, true);
   let tagIndex = 0;
   for (let index = 0; index < text.length; index += 1) {
     while (tagIndex < tags.length && tags[tagIndex].end < index) tagIndex += 1;
@@ -184,25 +182,10 @@ function multiLineInterpolations(text) {
       continue;
     }
     if ((text[index] !== '$' && text[index] !== '#') || text[index + 1] !== '{') continue;
-    let quote = null;
-    let raw = false;
-    let nesting = 0;
-    for (let inner = index + 2; inner < text.length; inner += 1) {
-      const character = text[inner];
-      if (quote) {
-        if (character === '\\' && !raw) inner += 1;
-        else if (character === quote) quote = null;
-      } else if (character === '"' || character === "'") {
-        quote = character;
-        raw = isRawStringStart(text, inner);
-      } else if (character === '{') {
-        nesting += 1;
-      } else if (character === '}' && nesting-- === 0) {
-        found.push({ offset: index + 2, end: inner, interpolation: true });
-        index = inner;
-        break;
-      }
-    }
+    const end = closingBrace(index + 2);
+    if (end < 0) continue;
+    found.push({ offset: index + 2, end, interpolation: true });
+    index = end;
   }
   return found;
 }
@@ -340,19 +323,22 @@ function formatTemplate(text, options = {}) {
   // A comment that fills whole lines starts at the beginning of its first line; the lines of
   // a longer one are left as they are.
   const commentLines = new Map();
+  // The last line that starts at or before the offset.
   const lineOf = (offset) => {
-    let line = lineOffsets.length - 1;
-    while (lineOffsets[line] > offset) line -= 1;
-    return line;
+    let low = 0;
+    let high = lineOffsets.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (lineOffsets[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low;
   };
-  const commentPattern = /<#--[\s\S]*?-->/g;
-  let comment;
-  while ((comment = commentPattern.exec(normalizedText)) !== null) {
-    const end = comment.index + comment[0].length;
-    const first = lineOf(comment.index);
+  for (const { start, end } of commentRanges(normalizedText)) {
+    const first = lineOf(start);
     const last = lineOf(end);
     const lineEnd = last + 1 < lineOffsets.length ? lineOffsets[last + 1] : normalizedText.length;
-    if (normalizedText.slice(lineOffsets[first], comment.index).trim() || normalizedText.slice(end, lineEnd).trim()) continue;
+    if (normalizedText.slice(lineOffsets[first], start).trim() || normalizedText.slice(end, lineEnd).trim()) continue;
     commentLines.set(first, 'first');
     for (let line = first + 1; line <= last; line += 1) commentLines.set(line, 'rest');
   }

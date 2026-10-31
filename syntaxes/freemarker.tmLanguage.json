@@ -207,7 +207,7 @@
       ]
     },
     "stringHtmlTagDouble": {
-      "match": "(</?)([A-Za-z][A-Za-z0-9:-]*)((?:[^<>\"\\\\]|'[^']*'|\\\\.)*?)(/?>)",
+      "match": "(</?)([A-Za-z][A-Za-z0-9:-]*)((?:[^<>\"'\\\\]|\\\\.|'(?!(?:[^<>\"'\\\\]|\\\\.)*['>])[^']*'|')*?)(/?>)",
       "captures": {
         "1": { "name": "punctuation.definition.tag.html.freemarker" },
         "2": { "name": "entity.name.tag.html.freemarker" },
@@ -216,7 +216,7 @@
       }
     },
     "stringHtmlTagSingle": {
-      "match": "(</?)([A-Za-z][A-Za-z0-9:-]*)((?:[^<>'\\\\]|\"[^\"]*\"|\\\\.)*?)(/?>)",
+      "match": "(</?)([A-Za-z][A-Za-z0-9:-]*)((?:[^<>'\"\\\\]|\\\\.|\"(?!(?:[^<>'\"\\\\]|\\\\.)*[\">])[^\"]*\"|\")*?)(/?>)",
       "captures": {
         "1": { "name": "punctuation.definition.tag.html.freemarker" },
         "2": { "name": "entity.name.tag.html.freemarker" },

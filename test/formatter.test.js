@@ -271,3 +271,11 @@ console.log('Formatter tests passed.');
   assert.strictEqual(formatTemplate(untouched, { wrapLongLines: true }), formatTemplate(untouched));
   assert.strictEqual(formatTemplate(`${long}\r\n<p/>`, { wrapLongLines: true }).split('\r\n').length, 4);
 }
+
+// Interpolations and tags that are not closed do not make formatting scan to the end for each.
+for (const unit of ['${', '<#a', '<#if (', '<#--', '<#--${']) {
+  const text = unit.repeat(100000);
+  const start = Date.now();
+  assert.strictEqual(formatTemplate(text), text);
+  assert(Date.now() - start < 2000, unit);
+}

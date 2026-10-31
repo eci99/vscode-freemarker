@@ -1,5 +1,5 @@
 const { findTagEnd, splitParameters } = require('./template-index');
-const { stringInterpolations } = require('./syntax');
+const { INTERPOLATION_SCAN, TAG_SCAN, repeatedScan, stringInterpolations } = require('./syntax');
 
 const KEYWORDS = new Set(['as', 'in', 'using', 'true', 'false', 'gt', 'gte', 'lt', 'lte']);
 
@@ -77,6 +77,8 @@ function identifiers(source, start, end) {
 // or '@' for tags.
 function expressionRegions(source) {
   const regions = [];
+  const tagEnd = repeatedScan(source, findTagEnd, TAG_SCAN);
+  const interpolationEnd = repeatedScan(source, findInterpolationEnd, INTERPOLATION_SCAN);
   for (let index = 0; index < source.length;) {
     const interpolation = (source[index] === '$' || source[index] === '#') && source[index + 1] === '{';
     const tag = /^<\/?[#@]/.exec(source.slice(index, index + 3));
@@ -84,7 +86,7 @@ function expressionRegions(source) {
       index += 1;
       continue;
     }
-    const end = interpolation ? findInterpolationEnd(source, index + 2) : findTagEnd(source, index + 1);
+    const end = interpolation ? interpolationEnd(index + 2) : tagEnd(index + 1);
     if (end < 0) {
       index += 2;
       continue;

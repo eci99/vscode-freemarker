@@ -181,3 +181,10 @@ const stringIssues = (text) => validateTemplate(text).filter((issue) => issue.me
 assert.deepStrictEqual(stringIssues('<#assign a = "foo>\n<p>x</p>\n<#assign b = "bar">'), ['Unclosed string, missing ".']);
 assert.deepStrictEqual(stringIssues("${'abc}\ntext"), ["Unclosed string, missing '."]);
 assert.deepStrictEqual(stringIssues('<#if a == "x">${"y ${z}"}</#if> <#assign q = r"C:\\">'), []);
+
+// Tags and interpolations that are not closed are not scanned to the end again for each of them.
+for (const unit of ['<#a', '${', '<#if (', '<@m ', '<#--', '<#--${', '<#a "${">', '${"${']) {
+  const start = Date.now();
+  validateTemplate(unit.repeat(100000));
+  assert(Date.now() - start < 2000, unit);
+}

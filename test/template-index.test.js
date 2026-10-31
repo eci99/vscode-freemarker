@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { literalType, parseTemplate, symbolType } = require('../template-index');
+const { expressionTest, literalType, parseTemplate, symbolType } = require('../template-index');
 
 const parsed = parseTemplate([
   '<#-- <#macro hidden> -->',
@@ -158,4 +158,44 @@ const compound = parseTemplate('<#local config+={"n": 1}/><#local config += {"m"
 assert.deepStrictEqual(
   compound.symbols.filter((symbol) => symbol.kind === 'variable' && !symbol.name.includes('.')).map((symbol) => symbol.name),
   ['config', 'other']
+);
+
+// Unclosed tags, many declarations, and long runs of spaces in a comment take linear time.
+for (const text of [
+  '<#macro x '.repeat(50000),
+  '<#import ('.repeat(50000),
+  '<#assign a=1>'.repeat(50000),
+  '<#--'.repeat(50000),
+  '<#list '.repeat(50000),
+  '<#list x as y '.repeat(50000),
+  '<#assign a>'.repeat(50000),
+  '<#assign a+=1>'.repeat(50000),
+  `<#-- a${' '.repeat(500000)}b -->\n<#macro m></#macro>`
+]) {
+  const start = Date.now();
+  parseTemplate(text);
+  assert(Date.now() - start < 2000, text.slice(0, 12));
+}
+assert.strictEqual(parseTemplate('<#-- a  \n   b -->\n<#macro m></#macro>').symbols[0].documentation, 'a b');
+
+// expressionTest answers like a scan from the opening for each name, also out of order.
+{
+  const source = '<#if (a > 1) && "x.y" == b.c>${d.e} "f.g" <#assign h = i.j';
+  const test = expressionTest(source);
+  const at = (name) => source.indexOf(name);
+  assert.deepStrictEqual(['a', 'x.y', 'b.c', 'd.e', 'f.g', 'i.j'].map((name) => test(at(name), at(name))), [true, false, true, true, false, true]);
+  assert.strictEqual(test(at('b.c'), at('b.c')), true);
+  assert.strictEqual(test(at('x.y'), at('x.y')), false);
+  assert.strictEqual(test(at('d.e'), source.indexOf('}') + 1), false);
+  const many = '<#if ' + 'a.b '.repeat(100000);
+  const start = Date.now();
+  const manyTest = expressionTest(many);
+  for (let index = 5; index < many.length; index += 4) manyTest(index, index);
+  assert(Date.now() - start < 2000);
+}
+
+// The loop variable of <#list> is the first "as name" before the >.
+assert.deepStrictEqual(
+  parseTemplate('<#list xs as x><#list ys><#items as y>${y}</#items></#list></#list> <#list zs>as z</#list>').symbols.map((symbol) => symbol.name),
+  ['x', 'y']
 );

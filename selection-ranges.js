@@ -1,12 +1,8 @@
 const { expressionRegions } = require('./semantic-tokens');
-const { maskRawStrings, normalizeTemplate } = require('./syntax');
+const { commentRanges, maskComments, maskRawStrings, normalizeTemplate } = require('./syntax');
 const { findHtmlTagEnd, htmlTags, templateBlocks } = require('./validator');
 
 const OPENING = { '(': ')', '[': ']', '{': '}' };
-
-function withoutComments(text) {
-  return text.replace(/<#--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '));
-}
 
 // The range without the whitespace at its start and end.
 function trimmed(text, start, end) {
@@ -63,14 +59,11 @@ function expressionRanges(source, start, end, ranges) {
 // blocks, and their branches, and comments. Offsets are those of the original text.
 function selectionRanges(text, options) {
   const normalized = normalizeTemplate(text, options);
-  const source = maskRawStrings(withoutComments(normalized.text));
+  const source = maskRawStrings(maskComments(normalized.text));
   const ranges = [];
 
-  const commentPattern = /<#--([\s\S]*?)-->/g;
-  let comment;
-  while ((comment = commentPattern.exec(normalized.text)) !== null) {
-    const contentStart = comment.index + 4;
-    ranges.push(trimmed(normalized.text, contentStart, contentStart + comment[1].length), [comment.index, commentPattern.lastIndex]);
+  for (const comment of commentRanges(normalized.text)) {
+    ranges.push(trimmed(normalized.text, comment.start + 4, comment.end - 3), [comment.start, comment.end]);
   }
 
   for (const region of expressionRegions(source)) {

@@ -13,9 +13,9 @@ const {
 } = require('./directives');
 const { enclosingRanges, selectionRanges } = require('./selection-ranges');
 const { EXPRESSION_DIRECTIVES, expressionRegions, identifiers, semanticTokens } = require('./semantic-tokens');
-const { displayText, isRawStringStart, normalizeTemplate, toSquareBracketTags } = require('./syntax');
+const { commentRanges, displayText, isRawStringStart, normalizeTemplate, toSquareBracketTags } = require('./syntax');
 const { analyzeExtraction, checkExpression, checkSelection } = require('./extract-macro');
-const { findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
+const { expressionTest, findTagEnd, literalType, parseTemplate, symbolType } = require('./template-index');
 const { htmlTags, templateBlocks, validateTemplate } = require('./validator');
 const { wrapWithAbbreviation } = require('./wrap');
 const { stageMovedTemplates } = require('./git-move');
@@ -1377,15 +1377,8 @@ class TemplateWorkspaceIndex {
       }
     }
 
-    const comments = /<#--[\s\S]*?-->/g;
-    const normalizedText = normalizeTemplate(text, syntaxOptions()).text;
-    let match;
-    while ((match = comments.exec(normalizedText)) !== null) {
-      ranges.push({
-        start: lineOf(match.index),
-        end: lineOf(match.index + match[0].length),
-        kind: vscode.FoldingRangeKind.Comment
-      });
+    for (const comment of commentRanges(normalizeTemplate(text, syntaxOptions()).text)) {
+      ranges.push({ start: lineOf(comment.start), end: lineOf(comment.end), kind: vscode.FoldingRangeKind.Comment });
     }
 
     // Registering a provider turns off the editor's own indentation folding, which the
@@ -1669,36 +1662,13 @@ class TemplateWorkspaceIndex {
     return !/\bas\s+[A-Za-z0-9_, ]*$/.test(tag[2]);
   }
 
+  // Checks for every name of a template come one after another for the same source.
   isFreeMarkerExpression(source, tokenStart, cursorOffset) {
-    const openings = ['${', '#{', '<#', '<@', '</@'];
-    let openingOffset = -1;
-    let opening = '';
-    for (const candidate of openings) {
-      const candidateOffset = source.lastIndexOf(candidate, cursorOffset);
-      if (candidateOffset > openingOffset) {
-        openingOffset = candidateOffset;
-        opening = candidate;
-      }
+    if (this.expressionSource !== source) {
+      this.expressionSource = source;
+      this.expressionTest = expressionTest(source);
     }
-    if (openingOffset < 0) return false;
-
-    // A > in parentheses, as in <#if (a > 1)>, does not end the tag.
-    const closingOffset = opening === '${' || opening === '#{'
-      ? source.indexOf('}', openingOffset + opening.length)
-      : findTagEnd(source, openingOffset + opening.length);
-    if (closingOffset >= 0 && cursorOffset > closingOffset) return false;
-
-    let quote = null;
-    for (let index = openingOffset + opening.length; index < tokenStart; index += 1) {
-      const character = source[index];
-      if (quote) {
-        if (character === '\\') index += 1;
-        else if (character === quote) quote = null;
-      } else if (character === '"' || character === "'") {
-        quote = character;
-      }
-    }
-    return quote === null;
+    return this.expressionTest(tokenStart, cursorOffset);
   }
 
   isMacroInvocation(source, tokenStart) {

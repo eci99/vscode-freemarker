@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.15 - 2026-10-31
+
+Fixed
+
+- Templates that are not closed properly no longer freeze VS Code. A file full of unclosed comments (`<#--<#--<#--`), tags (`<#if (<#if (`), or interpolations (`${${${`) used to block checking, highlighting, folding, formatting, and Expand Selection for minutes; each now takes a fraction of a second, even for a file of 1 MB. Results for normal templates are the same as before
+- Many names in an unclosed tag (`<#if a.b a.b a.b`), and comments with a long run of spaces, no longer slow down the checks for undeclared names and aliases
+- Syntax highlighting of HTML in strings no longer hangs on a long run of quotes (`"<a''''''''<>"`)
+
 ## 0.1.14 - 2026-10-27
 
 Added

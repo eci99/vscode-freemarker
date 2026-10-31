@@ -74,3 +74,10 @@ assert.deepStrictEqual(expand('[#list items as it|em][@show value=item /][/#list
 ]);
 
 console.log('Selection range tests passed.');
+
+// A comment that is not closed and is full of <#-- or <#--( takes linear time.
+for (const unit of ['<#--', '<#--(', '<#a', '${"${']) {
+  const start = Date.now();
+  selectionRanges(unit.repeat(100000));
+  assert(Date.now() - start < 2000, unit);
+}

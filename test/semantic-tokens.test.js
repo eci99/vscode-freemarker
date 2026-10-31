@@ -94,3 +94,10 @@ assert.deepStrictEqual(describe('<#assign p = 1><@m t="x ${p}" /> ${"in ${p}"}')
 assert.deepStrictEqual(describe('${r"${p}"}', { variables: ['p'] }), []);
 
 console.log('Semantic token tests passed.');
+
+// Unclosed comments, tags, and interpolations are not scanned to the end again for each.
+for (const unit of ['<#--', '<#--(', '<#(', '${', '<#a "${">']) {
+  const start = Date.now();
+  semanticTokens(unit.repeat(100000), { reportUnknown: true });
+  assert(Date.now() - start < 2000, unit);
+}

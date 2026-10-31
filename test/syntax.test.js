@@ -1,5 +1,8 @@
 const assert = require('assert');
-const { displayText, normalizeTemplate, resolveTagSyntax, toSquareBracketTags } = require('../syntax');
+const {
+  INTERPOLATION_SCAN, TAG_SCAN, displayText, interpolationEnd, normalizeTemplate, repeatedScan, resolveTagSyntax, scanEnds,
+  toSquareBracketTags
+} = require('../syntax');
 
 assert.strictEqual(resolveTagSyntax('<p>[#if a]x[/#if]</p>'), 'square');
 assert.strictEqual(resolveTagSyntax('<p><#if a>x</#if> [#if]</p>'), 'angle');
@@ -72,5 +75,48 @@ for (const [rule, text, matched] of [
   assert(new RegExp(grammar.repository[rule].end).test(text));
 }
 assert.strictEqual(new RegExp(grammar.repository.squareDirective.begin).exec('items[0]'), null);
+
+// HTML tags in strings: a lone quote is plain text, a quote pair may hide `<` and `>`.
+for (const [rule, text, matched] of [
+  ['stringHtmlTagDouble', '<a title=\\"don\'t\\">', '<a title=\\"don\'t\\">'],
+  ['stringHtmlTagDouble', '<img alt=\\"it\'s\\" />', '<img alt=\\"it\'s\\" />'],
+  ['stringHtmlTagDouble', '<p class=it\'s>', '<p class=it\'s>'],
+  ['stringHtmlTagDouble', '<a title=\\"don\'t\\">x</a> and \'y\'', '<a title=\\"don\'t\\">'],
+  ['stringHtmlTagDouble', '<a title=\'x>y\'>', '<a title=\'x>'],
+  ['stringHtmlTagDouble', '<a title=\'<b>\'>', '<a title=\'<b>\'>'],
+  ['stringHtmlTagDouble', '<a title=don\'t x=\'<b>\'>', '<a title=don\'t x=\'<b>\'>'],
+  ['stringHtmlTagDouble', '<a\'\'<>', null],
+  ['stringHtmlTagSingle', '<a title=x"y>', '<a title=x"y>'],
+  ['stringHtmlTagSingle', '<a title="x>y">', '<a title="x>'],
+  ['stringHtmlTagSingle', '<a title="<b>">', '<a title="<b>">'],
+  ['stringHtmlTagSingle', '<a title=\\\'x>y\\\'>', '<a title=\\\'x>']
+]) {
+  const match = new RegExp(grammar.repository[rule].match).exec(text);
+  assert.strictEqual(match && match[0], matched, text);
+}
+// A long run of quotes that cannot close the tag fails fast instead of trying every way to pair them.
+for (const [rule, quote] of [['stringHtmlTagDouble', '\''], ['stringHtmlTagSingle', '"']]) {
+  const start = Date.now();
+  assert(!new RegExp(grammar.repository[rule].match).test(`<a${quote.repeat(2000)}<>`.repeat(10)), rule);
+  assert(Date.now() - start < 1000, rule);
+}
+
+// scanEnds finds, from every offset, what a scan for the end of a tag or interpolation finds.
+{
+  const tag = 'a "x>" (b > c) >\'d\\\'>\' > r"e\\" >';
+  const ends = scanEnds(tag, TAG_SCAN, true);
+  // A > in a string or in parentheses is skipped, an escaped quote does not end a string.
+  assert.deepStrictEqual([0, 2, 7, 16].map((start) => ends[start]), [15, 15, 15, 23]);
+  // In r"e\" the backslash is a plain character.
+  assert.strictEqual(ends[25], 31);
+  assert.strictEqual(scanEnds(tag, TAG_SCAN, false)[25], -1);
+  const interpolation = 'a {b} "}" c} d {';
+  assert.deepStrictEqual([0, 3, 12, 14].map((start) => scanEnds(interpolation, INTERPOLATION_SCAN)[start]), [11, 4, -1, -1]);
+  let calls = 0;
+  const text = '${'.repeat(1000);
+  const end = repeatedScan(text, (scanned, start) => { calls += 1; return interpolationEnd(scanned, start); }, INTERPOLATION_SCAN, true);
+  for (let start = 2; start < text.length; start += 2) assert.strictEqual(end(start), -1);
+  assert(calls < 10);
+}
 
 console.log('Syntax tests passed.');

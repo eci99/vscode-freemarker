@@ -2005,6 +2005,21 @@ async function run() {
   settings.validateUndeclaredNames = false;
   assert.deepStrictEqual(await indexedIssues('${fromDataModel}'), []);
   delete settings.validateUndeclaredNames;
+  // The names in a tag that is not closed are checked without scanning to its end for each.
+  const unclosedStart = Date.now();
+  await indexedIssues('<#if ' + 'a.b '.repeat(40000));
+  assert(Date.now() - unclosedStart < 3000, `${Date.now() - unclosedStart} ms`);
+  // A comment that is not closed and is full of <#-- (or <#--( ) is checked, folded, and
+  // highlighted in linear time.
+  for (const unit of ['<#--', '<#--(', '[#--']) {
+    const commentStart = Date.now();
+    const commentText = unit.repeat(100000);
+    await indexedIssues(commentText);
+    const commentDocument = new Document(uri('/virtual/work/pages/checked.ftl'), commentText);
+    providers.folding.provideFoldingRanges(commentDocument);
+    await providers.semanticTokens.provideDocumentSemanticTokens(commentDocument);
+    assert(Date.now() - commentStart < 3000, `${unit}: ${Date.now() - commentStart} ms`);
+  }
   const missingTitleDocument = new Document(uri('/virtual/work/pages/checked.ftl'), '<#import "../lib/cards.ftl" as cards>\n<@cards.render />');
   onDidOpenDocument(missingTitleDocument);
   await new Promise((resolve) => setImmediate(resolve));
