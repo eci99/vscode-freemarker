@@ -7,3 +7,5 @@ test/**
 **/*.vsix
 images/*.svg
 images/demo.gif
+CLAUDE-SECURITY-*/**
+graphify-out/**

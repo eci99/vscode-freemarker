@@ -2,7 +2,7 @@
   "name": "freemarker-intellisense",
   "displayName": "FreeMarker (with IntelliSense)",
   "description": "Completion, navigation, validation, and formatting for Apache FreeMarker templates, across imported and included files.",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "publisher": "eci99",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -257,6 +257,13 @@
         "language": "freemarker",
         "scopeName": "text.html.ftl",
         "path": "./syntaxes/freemarker.tmLanguage.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "freemarker-file-icons",
+        "label": "FreeMarker File Icons",
+        "path": "./icons/freemarker-icon-theme.json"
       }
     ]
   }

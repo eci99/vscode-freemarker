@@ -1,0 +1,12 @@
+{
+  "iconDefinitions": {
+    "_freemarker": {
+      "iconPath": "./freemarker.svg"
+    }
+  },
+  "fileExtensions": {
+    "ftl": "_freemarker",
+    "ftlh": "_freemarker",
+    "ftlx": "_freemarker"
+  }
+}

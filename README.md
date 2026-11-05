@@ -95,6 +95,7 @@ Templates in diff and merge editors, and files with unresolved merge conflicts, 
 - **Matching tags**: with the cursor on a tag, the start tag, the end tag, and branch tags such as `<#else>` of the same block are highlighted.
 - **Syntax highlighting** for directives, interpolations, comments, expressions, built-ins, and special variables, on top of HTML.
 - **Colors for names**: macros, functions, parameters, variables, local variables, and namespace aliases are told apart where they are declared and where they are used. The colors come from the color theme, so how many of them look different depends on the theme. They can be set with `editor.semanticTokenColorCustomizations`, using the selectors `macro:freemarker`, `function:freemarker`, `parameter:freemarker`, `variable:freemarker`, `variable.local:freemarker` (`<#local>` and loop variables), and `namespace:freemarker`.
+- **File icon theme**: **FreeMarker File Icons** shows the FreeMarker logo for `.ftl`, `.ftlh`, and `.ftlx` files. Pick it with **Preferences: File Icon Theme**.
 
 ## How templates are connected
 

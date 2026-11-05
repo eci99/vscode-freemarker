@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17 - 2026-11-05
+
+Added
+
+- A file icon theme, **FreeMarker File Icons**, shows the FreeMarker logo for `.ftl`, `.ftlh`, and `.ftlx` files. Pick it with **Preferences: File Icon Theme**. It replaces the icons of other file types, so it is optional
+
 ## 0.1.16 - 2026-10-31
 
 Changed
